@@ -526,22 +526,23 @@ class RealtimePumpDetector:
 
                                         
                                         # Store Alert Data for Updates & Trailing Stop
+                                        existing_max = self.last_gemini_alerts[symbol].get('max_price', 0)
                                         self.last_gemini_alerts[symbol].update({
                                             'alert_type': 'GEMINI',
                                             'tier': result.get('tier_label', 'UPDATE'),
-                                            'score': analysis['quality_score'],
+                                            'score': current_score,
                                             'price': current_price,
-                                            'vol_coin': result.get('vol_24h', 0),
-                                            'vol_usdt': result.get('vol_24h_usdt', 0),
-                                            'vol_ratio': analysis.get('vol_ratio', 0),
-                                            'funding': analysis.get('funding_rate', 0),
+                                            'vol_24h': result.get('vol_24h', 0),
+                                            'vol_24h_usdt': result.get('vol_24h_usdt', 0),
+                                            'vol_ratio': result.get('vol_ratio', 0),
+                                            'funding_rate': result.get('funding_rate', 0),
                                             'last_update': datetime.now(),
                                             'update_count': update_count,
                                             'last_update_diff': changes, # Save diff context for AI
-                                            # Trailing Stop Data
-                                            'max_price': float(current_price),
+                                            # Trailing Stop Data - preserve max_price
+                                            'max_price': max(float(current_price), existing_max),
                                             'tp1': result.get('tp_sl_info', {}).get('tp1', 0),
-                                            'drop_alert_sent': False
+                                            'drop_alert_sent': self.last_gemini_alerts[symbol].get('drop_alert_sent', False)
                                         })
                                         self._save_history()
                                         
@@ -791,7 +792,7 @@ class RealtimePumpDetector:
                                         time.sleep(2) # Prevent Rate Limit
                                     
                                     # Update tracking with VOLUME
-                                    self.last_gemini_alerts[symbol] = {
+                                    new_alert_data = {
                                         'time': current_time,
                                         'score': current_score,
                                         'price': current_price,
@@ -800,11 +801,19 @@ class RealtimePumpDetector:
                                         'vol_ratio': result.get('vol_ratio', 0),
                                         'funding_rate': result.get('funding_rate', 0),
                                         'update_count': update_count,
-                                        # Trailing Stop Data
-                                        'max_price': float(current_price),
                                         'tp1': result.get('tp_sl_info', {}).get('tp1', 0),
-                                        'drop_alert_sent': False
                                     }
+                                    if symbol in self.last_gemini_alerts and alert_type == "UPDATE":
+                                        # UPDATE: preserve trailing stop data
+                                        existing_max = self.last_gemini_alerts[symbol].get('max_price', 0)
+                                        new_alert_data['max_price'] = max(float(current_price), existing_max)
+                                        new_alert_data['drop_alert_sent'] = self.last_gemini_alerts[symbol].get('drop_alert_sent', False)
+                                        self.last_gemini_alerts[symbol].update(new_alert_data)
+                                    else:
+                                        # NEW: fresh tracking data
+                                        new_alert_data['max_price'] = float(current_price)
+                                        new_alert_data['drop_alert_sent'] = False
+                                        self.last_gemini_alerts[symbol] = new_alert_data
                                     self._save_history() # Auto-save/backup
                                     
                                 except Exception as e:
