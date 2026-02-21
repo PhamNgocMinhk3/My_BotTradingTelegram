@@ -267,10 +267,10 @@ class MarketScanner:
                             logger.info(f"🐋 {symbol}: Institutional {activity} detected")
                         
                         # Log BOT warnings
-                        bot_activity = advanced_result.get('bot_activity', {})
-                        for bot_type, data in bot_activity.items():
                             if data.get('detected'):
                                 logger.warning(f"🚨 {symbol}: {bot_type.upper()} BOT detected ({data.get('confidence')}%)")
+                except Exception as e:
+                    logger.error(f"Error in advanced detection for {symbol}: {e}")
             
             # Determine condition type (RSI only)
             conditions = []

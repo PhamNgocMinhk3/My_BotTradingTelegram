@@ -1,0 +1,14 @@
+{
+  "symbols": [
+    "STRONGUSDT"
+  ],
+  "details": {
+    "STRONGUSDT": {
+      "price": 100.0,
+      "score": 80,
+      "time": 1771429246.256627,
+      "entry_time_str": "22:40:46"
+    }
+  },
+  "updated_at": "2026-02-18T22:40:46.638412"
+}

@@ -5,9 +5,11 @@ Handles user commands from Telegram
 
 import logging
 import os
+import traceback
 from datetime import datetime
 import time
 import base64
+import numpy as np
 from telebot import types
 from watchlist import WatchlistManager
 from watchlist_monitor import WatchlistMonitor
@@ -56,6 +58,7 @@ class TelegramCommandHandler:
         
         # Initialize watchlist monitor (auto-notification)
         self.monitor = WatchlistMonitor(self, check_interval=300)  # 5 minutes
+        self.monitor.start()  # Auto-start monitor on boot
         
         # Use monitor's volume detector for signal alerts (shared instance)
         self.volume_detector = self.monitor.volume_detector
@@ -870,13 +873,13 @@ class TelegramCommandHandler:
                     msg += f"   Giảm nhiễu, tín hiệu mượt hơn close price\n\n"
                     msg += f"<b>2. RSI (RMA):</b>\n"
                     msg += f"   Length: 6\n"
-                    msg += f"   Oversold: < 20\n"
-                    msg += f"   Overbought: > 80\n\n"
+                    msg += f"   Oversold: &lt; 20\n"
+                    msg += f"   Overbought: &gt; 80\n\n"
                     msg += f"<b>3. Stochastic:</b>\n"
                     msg += f"   %K Period: 6\n"
                     msg += f"   Smooth: 6\n"
                     msg += f"   %D Period: 6\n"
-                    msg += f"   Oversold: < 20, Overbought: > 80\n\n"
+                    msg += f"   Oversold: &lt; 20, Overbought: &gt; 80\n\n"
                     msg += f"<b>4. Consensus Signal:</b>\n"
                     msg += f"   ✅ Cả RSI và Stoch phải đồng ý\n"
                     msg += f"   ✅ Tính signal cho 4 timeframes\n"
@@ -898,16 +901,19 @@ class TelegramCommandHandler:
                         reply_markup=keyboard
                     )
                 
-                # AI Analysis callbacks
-                elif data.startswith("ai_analyze_"):
-                    symbol = data.replace("ai_analyze_", "")
-                    logger.info(f"🤖 AI Analysis callback triggered for {symbol}")
+                # AI Analysis callbacks (Normal & Update)
+                elif data.startswith("ai_analyze_") or data.startswith("ai_update_"):
+                    is_update = data.startswith("ai_update_")
+                    symbol = data.replace("ai_analyze_", "").replace("ai_update_", "")
+                    logger.info(f"🤖 AI Analysis callback triggered for {symbol} (Update: {is_update})")
                     
                     # Send processing message
+                    proc_title = "🤖 <b>GEMINI AI ĐANG CẬP NHẬT PHÂN TÍCH</b>\n" if is_update else "🤖 <b>GEMINI AI ĐANG PHÂN TÍCH</b>\n"
+                    
                     processing_msg = self.telegram_bot.send_message(
                         chat_id=call.message.chat.id,
                         text=f"═══════════════════════════════════\n"
-                             f"🤖 <b>GEMINI AI ĐANG PHÂN TÍCH</b>\n"
+                             f"{proc_title}"
                              f"═══════════════════════════════════\n\n"
                              f"💎 <b>Symbol:</b> {symbol}\n"
                              f"📊 Đang thu thập dữ liệu từ tất cả indicators...\n"
@@ -921,17 +927,21 @@ class TelegramCommandHandler:
                     
                     # Check if we have pump data for this symbol
                     pump_data = None
-                    if symbol in self.pump_detector.detected_pumps:
+                    if is_update and symbol in self.pump_detector.last_gemini_alerts:
+                        # For updates, wrap the diff so AI can use it
+                        pump_data = self.pump_detector.last_gemini_alerts[symbol]
+                        pump_data['is_update_analysis'] = True
+                    elif symbol in self.pump_detector.detected_pumps:
                         pump_data = self.pump_detector.detected_pumps[symbol]
                     
-                    # Perform AI analysis with user_id for historical learning
+                    # Perform AI analysis with bypass cache for Updates
                     try:
                         result = self.gemini_analyzer.analyze(
                             symbol, 
                             pump_data=pump_data, 
                             trading_style='swing',
-                            use_cache=True,
-                            user_id=call.from_user.id  # NEW: Pass user_id for history
+                            use_cache=not is_update, # Bypass cache if it's an update
+                            user_id=call.from_user.id  # Pass user_id for history
                         )
                         
                         if not result:
@@ -2774,8 +2784,114 @@ class TelegramCommandHandler:
                     f"⏳ Vui lòng chờ 15-20 giây..."
                 )
                 
-                # === 1. PUMP/DUMP ANALYSIS ===
-                pump_result = self.pump_detector.manual_scan(symbol)
+                # === 1. PUMP/DUMP ANALYSIS (ENHANCED) ===
+                pump_result = None
+                try:
+                    pump_result = self.pump_detector.manual_scan(symbol)
+                except:
+                    pass
+                
+                # Direct pump indicator analysis
+                pump_data = {}
+                pump_error = None
+                try:
+                    df_5m = self.binance.get_klines(symbol, '5m', limit=100)
+                    df_1h = self.binance.get_klines(symbol, '1h', limit=50)
+                    
+                    if df_5m is None:
+                        pump_error = self.binance.last_error or f"Failed to fetch 5m data [{getattr(self.binance, 'last_debug_info', '')}]"
+                    elif len(df_5m) < 20:
+                        pump_error = f"Insufficient 5m data: {len(df_5m)} candles [{getattr(self.binance, 'last_debug_info', '')}]"
+                    elif df_5m is not None and len(df_5m) >= 20:
+                        current_price_raw = float(df_5m['close'].iloc[-1])
+                        
+                        vol_cur_5m = float(df_5m['volume'].iloc[-1])
+                        vol_avg_5m = float(df_5m['volume'].rolling(20).mean().iloc[-1])
+                        pump_data['vol_spike_5m'] = vol_cur_5m / vol_avg_5m if vol_avg_5m > 0 else 0
+                        
+                        pump_data['vol_spike_1h'] = 0
+                        if df_1h is not None and len(df_1h) >= 20:
+                            vol_cur_1h = float(df_1h['volume'].iloc[-1])
+                            vol_avg_1h = float(df_1h['volume'].rolling(20).mean().iloc[-1])
+                            pump_data['vol_spike_1h'] = vol_cur_1h / vol_avg_1h if vol_avg_1h > 0 else 0
+                        
+                        p5m = float(df_5m['close'].iloc[-2])
+                        p30m = float(df_5m['close'].iloc[-7]) if len(df_5m) >= 7 else p5m
+                        p1h = float(df_5m['close'].iloc[-13]) if len(df_5m) >= 13 else p5m
+                        pump_data['chg_5m'] = ((current_price_raw - p5m) / p5m) * 100
+                        pump_data['chg_30m'] = ((current_price_raw - p30m) / p30m) * 100
+                        pump_data['chg_1h'] = ((current_price_raw - p1h) / p1h) * 100
+                        
+                        delta_s = df_5m['close'].diff()
+                        gain_s = delta_s.where(delta_s > 0, 0.0)
+                        loss_s = -delta_s.where(delta_s < 0, 0.0)
+                        ag_s = gain_s.ewm(alpha=1/14, adjust=False).mean()
+                        al_s = loss_s.ewm(alpha=1/14, adjust=False).mean()
+                        rs_s = ag_s / al_s
+                        rsi_s = 100 - (100 / (1 + rs_s))
+                        pump_data['rsi_5m'] = float(rsi_s.iloc[-1])
+                        pump_data['rsi_prev'] = float(rsi_s.iloc[-4]) if len(rsi_s) >= 4 else pump_data['rsi_5m']
+                        pump_data['rsi_momentum'] = pump_data['rsi_5m'] - pump_data['rsi_prev']
+                        
+                        pump_data['rsi_1h'] = 50
+                        if df_1h is not None and len(df_1h) >= 20:
+                            d1h = df_1h['close'].diff()
+                            g1h = d1h.where(d1h > 0, 0.0)
+                            l1h = -d1h.where(d1h < 0, 0.0)
+                            ag1h = g1h.ewm(alpha=1/14, adjust=False).mean()
+                            al1h = l1h.ewm(alpha=1/14, adjust=False).mean()
+                            rs1h = ag1h / al1h
+                            rsi1h = 100 - (100 / (1 + rs1h))
+                            pump_data['rsi_1h'] = float(rsi1h.iloc[-1])
+                        
+                        obv_v = (np.sign(df_5m['close'].diff().fillna(0)) * df_5m['volume']).cumsum()
+                        obv_now = float(obv_v.iloc[-1])
+                        obv_10 = float(obv_v.iloc[-10]) if len(obv_v) >= 10 else 0
+                        pump_data['obv_trend'] = "INFLOW" if obv_now > obv_10 else "OUTFLOW"
+                        pump_data['obv_change'] = obv_now - obv_10
+                        
+                        greens = sum(1 for i in range(len(df_5m)-20, len(df_5m))
+                                    if float(df_5m['close'].iloc[i]) > float(df_5m['open'].iloc[i]))
+                        pump_data['buy_ratio'] = greens / 20
+                        
+                        pump_data['ob_ratio'] = 0
+                        pump_data['cost_5pct'] = 0
+                        try:
+                            depth = self.binance.get_order_book(symbol)
+                            if depth:
+                                bids = depth['bids'][:20]
+                                asks = depth['asks'][:20]
+                                bid_vol = sum(float(b[1]) for b in bids)
+                                ask_vol = sum(float(a[1]) for a in asks)
+                                pump_data['ob_ratio'] = bid_vol / ask_vol if ask_vol > 0 else 0
+                                target_p = current_price_raw * 1.05
+                                for ask in depth['asks']:
+                                    if float(ask[0]) <= target_p:
+                                        pump_data['cost_5pct'] += float(ask[0]) * float(ask[1])
+                                    else:
+                                        break
+                        except:
+                            pass
+                        
+                        p_score = 0
+                        if pump_data['vol_spike_5m'] > 3: p_score += 25
+                        elif pump_data['vol_spike_5m'] > 2: p_score += 15
+                        elif pump_data['vol_spike_5m'] > 1.5: p_score += 8
+                        if pump_data['vol_spike_1h'] > 3: p_score += 20
+                        elif pump_data['vol_spike_1h'] > 2: p_score += 12
+                        if pump_data['chg_1h'] > 5: p_score += 15
+                        elif pump_data['chg_30m'] > 3: p_score += 10
+                        if pump_data['obv_change'] > 0: p_score += 15
+                        if pump_data['ob_ratio'] > 3: p_score += 15
+                        elif pump_data['ob_ratio'] > 2: p_score += 10
+                        if 0 < pump_data['cost_5pct'] < 50000: p_score += 10
+                        elif 0 < pump_data['cost_5pct'] < 200000: p_score += 5
+                        pump_data['pump_score'] = min(100, p_score)
+                        
+                except Exception as e:
+                    pump_error = f"{type(e).__name__}: {e}"
+                    logger.error(f"Error in pump indicator analysis: {e}")
+                    logger.error(traceback.format_exc())
                 
                 # === 2. RSI/MFI ANALYSIS ===
                 timeframes = ['5m', '1h', '4h', '1d']
@@ -2805,7 +2921,7 @@ class TelegramCommandHandler:
                 )
                 
                 # === 4. BUILD COMPREHENSIVE MESSAGE ===
-                msg = f"<b>📊 COMPREHENSIVE ANALYSIS</b>\n\n"
+                msg = f"<b>📊 PHÂN TÍCH TOÀN DIỆN</b>\n\n"
                 msg += f"<b>💎 {symbol}</b>\n"
                 msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 
@@ -2816,50 +2932,89 @@ class TelegramCommandHandler:
                     price_change_24h = ticker_24h['price_change_percent']
                     volume_24h = ticker_24h['volume']
                     
-                    # Format price with symbol-appropriate precision
                     formatted_price = self.binance.format_price(symbol, current_price)
-                    msg += f"<b>💰 Giá Hiện Tại:</b> ${formatted_price}\n"
-                    msg += f"<b>📈 24h Change:</b> {price_change_24h:+.2f}%\n"
-                    msg += f"<b>💧 24h Volume:</b> ${volume_24h:,.0f}\n\n"
+                    msg += f"<b>💰 Giá:</b> ${formatted_price}\n"
+                    msg += f"<b>📈 24h:</b> {price_change_24h:+.2f}%\n"
+                    msg += f"<b>💧 Vol 24h:</b> ${volume_24h:,.0f}\n\n"
                 
                 msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 
-                # === PUMP/DUMP SECTION ===
-                msg += "<b>🚀 PUMP/DUMP DETECTION (3-Layer)</b>\n\n"
+                # === PUMP ANALYSIS SECTION (ENHANCED) ===
+                msg += "<b>🚀 PUMP ANALYSIS</b>\n\n"
+                
+                if pump_data:
+                    score = pump_data.get('pump_score', 0)
+                    
+                    if score >= 60:
+                        msg += f"🔴 <b>Status: HOT — Khả năng PUMP cao!</b>\n"
+                    elif score >= 40:
+                        msg += f"🟡 <b>Status: WARM — Có dấu hiệu pump</b>\n"
+                    elif score >= 20:
+                        msg += f"🟢 <b>Status: MILD — Pump yếu/chưa rõ</b>\n"
+                    else:
+                        msg += f"⚪ <b>Status: COLD — Không có dấu hiệu pump</b>\n"
+                    
+                    filled = min(5, score // 20)
+                    score_bar = "█" * filled + "░" * (5 - filled)
+                    msg += f"🎯 Pump Score: [{score_bar}] <b>{score}/100</b>\n\n"
+                    
+                    msg += f"📊 <b>Biến động giá:</b>\n"
+                    msg += f"   5m: {pump_data.get('chg_5m', 0):+.2f}%"
+                    msg += f" | 30m: {pump_data.get('chg_30m', 0):+.2f}%"
+                    msg += f" | 1H: {pump_data.get('chg_1h', 0):+.2f}%\n\n"
+                    
+                    v5m = pump_data.get('vol_spike_5m', 0)
+                    v1h = pump_data.get('vol_spike_1h', 0)
+                    v5m_icon = "🔥" if v5m > 2 else "📊"
+                    v1h_icon = "🔥" if v1h > 2 else "📊"
+                    msg += f"{v5m_icon} <b>Volume 5m:</b> {v5m:.1f}x | {v1h_icon} <b>Volume 1H:</b> {v1h:.1f}x\n"
+                    
+                    rsi5 = pump_data.get('rsi_5m', 0)
+                    rsi1h = pump_data.get('rsi_1h', 0)
+                    rsi_mom = pump_data.get('rsi_momentum', 0)
+                    rsi5_icon = "🔴" if rsi5 > 70 else ("🟢" if rsi5 < 30 else "🔵")
+                    rsi1h_icon = "🔴" if rsi1h > 70 else ("🟢" if rsi1h < 30 else "🔵")
+                    msg += f"{rsi5_icon} <b>RSI 5m:</b> {rsi5:.1f} | {rsi1h_icon} <b>RSI 1H:</b> {rsi1h:.1f} | Δ{rsi_mom:+.1f}\n"
+                    
+                    obv_icon = "💰" if pump_data.get('obv_trend') == "INFLOW" else "🔻"
+                    msg += f"{obv_icon} <b>OBV:</b> {pump_data.get('obv_trend', 'N/A')}"
+                    obv_chg = pump_data.get('obv_change', 0)
+                    if abs(obv_chg) > 0:
+                        msg += f" ({obv_chg:+,.0f})"
+                    msg += "\n"
+                    
+                    ob_r = pump_data.get('ob_ratio', 0)
+                    cost = pump_data.get('cost_5pct', 0)
+                    if ob_r > 0:
+                        ob_icon = "🧱" if ob_r > 2 else "📋"
+                        msg += f"{ob_icon} <b>Buy/Sell:</b> {ob_r:.1f}x"
+                        if cost > 0:
+                            msg += f" | <b>Push 5%:</b> ${cost:,.0f}"
+                        msg += "\n"
+                    
+                    bp = pump_data.get('buy_ratio', 0)
+                    bp_icon = "💪" if bp > 0.6 else "📊"
+                    msg += f"{bp_icon} <b>Buy Pressure:</b> {bp*100:.0f}% ({int(bp*20)}/20 green)\n\n"
+                    
+                    if rsi5 > 80 or rsi1h > 80:
+                        msg += f"⚠️ RSI quá cao — Rủi ro điều chỉnh!\n"
+                    if cost > 0 and cost < 20000:
+                        msg += f"⚠️ Thanh khoản rất mỏng!\n"
+                else:
+                    if pump_error:
+                        msg += f"⚪ Pump data error: {pump_error}\n\n"
+                    else:
+                        msg += "⚪ Không có dữ liệu pump\n\n"
                 
                 if pump_result and 'final_score' in pump_result:
-                    score = pump_result['final_score']
-                    
-                    if score >= 80:
-                        status_emoji = "🔴"
-                        status_text = "PUMP CAO"
-                    elif score >= 60:
-                        status_emoji = "🟡"
-                        status_text = "PUMP VỪA"
-                    elif score >= 40:
-                        status_emoji = "🟢"
-                        status_text = "PUMP YẾU"
-                    else:
-                        status_emoji = "⚪"
-                        status_text = "KHÔNG PUMP"
-                    
-                    msg += f"{status_emoji} <b>Status:</b> {status_text}\n"
-                    msg += f"<b>🎯 Final Score:</b> {score:.0f}%\n\n"
-                    
-                    # Layer breakdown
+                    layer_score = pump_result['final_score']
+                    msg += f"<b>📋 3-Layer:</b> {layer_score:.0f}%\n"
                     if 'layer1' in pump_result and pump_result['layer1']:
-                        layer1 = pump_result['layer1']
-                        msg += f"   ⚡ Layer 1 (5m): {layer1['pump_score']:.0f}%\n"
-                    
+                        msg += f"   ⚡ L1: {pump_result['layer1']['pump_score']:.0f}%\n"
                     if 'layer2' in pump_result and pump_result['layer2']:
-                        layer2 = pump_result['layer2']
-                        msg += f"   ✅ Layer 2 (1h/4h): {layer2['pump_score']:.0f}%\n"
-                    
+                        msg += f"   ✅ L2: {pump_result['layer2']['pump_score']:.0f}%\n"
                     if 'layer3' in pump_result and pump_result['layer3']:
-                        layer3 = pump_result['layer3']
-                        msg += f"   📈 Layer 3 (1D): {layer3['pump_score']:.0f}%\n"
-                else:
-                    msg += "⚪ <b>Status:</b> Không có tín hiệu pump rõ ràng\n"
+                        msg += f"   📈 L3: {pump_result['layer3']['pump_score']:.0f}%\n"
                 
                 msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 
@@ -3056,8 +3211,130 @@ class TelegramCommandHandler:
                     chat_id=target_chat_id
                 )
                 
-                # === 1. PUMP/DUMP ANALYSIS ===
-                pump_result = self.pump_detector.manual_scan(symbol)
+                # === 1. PUMP/DUMP ANALYSIS (ENHANCED) ===
+                pump_result = None
+                try:
+                    pump_result = self.pump_detector.manual_scan(symbol)
+                except:
+                    pass
+                
+                # Direct pump indicator analysis
+                pump_data = {}
+                pump_error = None
+                try:
+                    df_5m = self.binance.get_klines(symbol, '5m', limit=100)
+                    df_1h = self.binance.get_klines(symbol, '1h', limit=50)
+                    
+                    if df_5m is None:
+                        pump_error = self.binance.last_error or f"Failed to fetch 5m data [{getattr(self.binance, 'last_debug_info', '')}]"
+                    elif len(df_5m) < 20:
+                        pump_error = f"Insufficient 5m data: {len(df_5m)} candles [{getattr(self.binance, 'last_debug_info', '')}]"
+                    elif df_5m is not None and len(df_5m) >= 20:
+                        current_price_raw = float(df_5m['close'].iloc[-1])
+                        
+                        # Volume Spike 5m
+                        vol_cur_5m = float(df_5m['volume'].iloc[-1])
+                        vol_avg_5m = float(df_5m['volume'].rolling(20).mean().iloc[-1])
+                        pump_data['vol_spike_5m'] = vol_cur_5m / vol_avg_5m if vol_avg_5m > 0 else 0
+                        
+                        # Volume Spike 1H
+                        pump_data['vol_spike_1h'] = 0
+                        if df_1h is not None and len(df_1h) >= 20:
+                            vol_cur_1h = float(df_1h['volume'].iloc[-1])
+                            vol_avg_1h = float(df_1h['volume'].rolling(20).mean().iloc[-1])
+                            pump_data['vol_spike_1h'] = vol_cur_1h / vol_avg_1h if vol_avg_1h > 0 else 0
+                        
+                        # Price changes
+                        p5m = float(df_5m['close'].iloc[-2])
+                        p30m = float(df_5m['close'].iloc[-7]) if len(df_5m) >= 7 else p5m
+                        p1h = float(df_5m['close'].iloc[-13]) if len(df_5m) >= 13 else p5m
+                        pump_data['chg_5m'] = ((current_price_raw - p5m) / p5m) * 100
+                        pump_data['chg_30m'] = ((current_price_raw - p30m) / p30m) * 100
+                        pump_data['chg_1h'] = ((current_price_raw - p1h) / p1h) * 100
+                        
+                        # RSI 5m
+                        delta = df_5m['close'].diff()
+                        gain = delta.where(delta > 0, 0.0)
+                        loss = -delta.where(delta < 0, 0.0)
+                        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+                        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+                        rs = avg_gain / avg_loss
+                        rsi_s = 100 - (100 / (1 + rs))
+                        pump_data['rsi_5m'] = float(rsi_s.iloc[-1])
+                        pump_data['rsi_prev'] = float(rsi_s.iloc[-4]) if len(rsi_s) >= 4 else pump_data['rsi_5m']
+                        pump_data['rsi_momentum'] = pump_data['rsi_5m'] - pump_data['rsi_prev']
+                        
+                        # RSI 1H
+                        pump_data['rsi_1h'] = 50
+                        if df_1h is not None and len(df_1h) >= 20:
+                            d1h = df_1h['close'].diff()
+                            g1h = d1h.where(d1h > 0, 0.0)
+                            l1h = -d1h.where(d1h < 0, 0.0)
+                            ag1h = g1h.ewm(alpha=1/14, adjust=False).mean()
+                            al1h = l1h.ewm(alpha=1/14, adjust=False).mean()
+                            rs1h = ag1h / al1h
+                            rsi1h = 100 - (100 / (1 + rs1h))
+                            pump_data['rsi_1h'] = float(rsi1h.iloc[-1])
+                        
+                        # OBV
+                        obv_vals = (np.sign(df_5m['close'].diff().fillna(0)) * df_5m['volume']).cumsum()
+                        obv_now = float(obv_vals.iloc[-1])
+                        obv_10 = float(obv_vals.iloc[-10]) if len(obv_vals) >= 10 else 0
+                        pump_data['obv_trend'] = "INFLOW" if obv_now > obv_10 else "OUTFLOW"
+                        pump_data['obv_change'] = obv_now - obv_10
+                        
+                        # Buy pressure
+                        greens = sum(1 for i in range(len(df_5m)-20, len(df_5m))
+                                    if float(df_5m['close'].iloc[i]) > float(df_5m['open'].iloc[i]))
+                        pump_data['buy_ratio'] = greens / 20
+                        
+                        # Order Book
+                        pump_data['ob_ratio'] = 0
+                        pump_data['cost_5pct'] = 0
+                        try:
+                            depth = self.binance.get_order_book(symbol)
+                            if depth:
+                                bids = depth['bids'][:20]
+                                asks = depth['asks'][:20]
+                                bid_vol = sum(float(b[1]) for b in bids)
+                                ask_vol = sum(float(a[1]) for a in asks)
+                                pump_data['ob_ratio'] = bid_vol / ask_vol if ask_vol > 0 else 0
+                                
+                                target_p = current_price_raw * 1.05
+                                for ask in depth['asks']:
+                                    if float(ask[0]) <= target_p:
+                                        pump_data['cost_5pct'] += float(ask[0]) * float(ask[1])
+                                    else:
+                                        break
+                        except:
+                            pass
+                        
+                        # Pump Score
+                        p_score = 0
+                        if pump_data['vol_spike_5m'] > 3: p_score += 25
+                        elif pump_data['vol_spike_5m'] > 2: p_score += 15
+                        elif pump_data['vol_spike_5m'] > 1.5: p_score += 8
+                        
+                        if pump_data['vol_spike_1h'] > 3: p_score += 20
+                        elif pump_data['vol_spike_1h'] > 2: p_score += 12
+                        
+                        if pump_data['chg_1h'] > 5: p_score += 15
+                        elif pump_data['chg_30m'] > 3: p_score += 10
+                        
+                        if pump_data['obv_change'] > 0: p_score += 15
+                        
+                        if pump_data['ob_ratio'] > 3: p_score += 15
+                        elif pump_data['ob_ratio'] > 2: p_score += 10
+                        
+                        if 0 < pump_data['cost_5pct'] < 50000: p_score += 10
+                        elif 0 < pump_data['cost_5pct'] < 200000: p_score += 5
+                        
+                        pump_data['pump_score'] = min(100, p_score)
+                        
+                except Exception as e:
+                    pump_error = f"{type(e).__name__}: {e}"
+                    logger.error(f"Error in pump indicator analysis: {e}")
+                    logger.error(traceback.format_exc())
                 
                 # === 2. RSI/MFI ANALYSIS ===
                 timeframes = ['5m', '1h', '4h', '1d']
@@ -3106,7 +3383,7 @@ class TelegramCommandHandler:
                 ticker_24h = self.binance.get_24h_data(symbol)
                 
                 # === 4. BUILD COMPREHENSIVE MESSAGE ===
-                msg = f"<b>📊 COMPREHENSIVE ANALYSIS</b>\n\n"
+                msg = f"<b>📊 PHÂN TÍCH TOÀN DIỆN</b>\n\n"
                 msg += f"<b>💎 {symbol}</b>\n"
                 msg += f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
                 
@@ -3116,48 +3393,105 @@ class TelegramCommandHandler:
                     price_change_24h = ticker_24h['price_change_percent']
                     volume_24h = ticker_24h['volume']
                     
-                    msg += f"<b>💰 Giá Hiện Tại:</b> ${current_price:,.8f}\n"
-                    msg += f"<b>📈 24h Change:</b> {price_change_24h:+.2f}%\n"
-                    msg += f"<b>💧 24h Volume:</b> ${volume_24h:,.0f}\n\n"
+                    msg += f"<b>💰 Giá:</b> ${current_price:,.8f}\n"
+                    msg += f"<b>📈 24h:</b> {price_change_24h:+.2f}%\n"
+                    msg += f"<b>💧 Vol 24h:</b> ${volume_24h:,.0f}\n\n"
                 
                 msg += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 
-                # === PUMP/DUMP SECTION ===
-                msg += "<b>🚀 PUMP/DUMP DETECTION (3-Layer)</b>\n\n"
+                # === PUMP ANALYSIS SECTION (ENHANCED) ===
+                msg += "<b>🚀 PUMP ANALYSIS</b>\n\n"
                 
-                if pump_result and 'final_score' in pump_result:
-                    score = pump_result['final_score']
+                if pump_data:
+                    score = pump_data.get('pump_score', 0)
                     
-                    if score >= 80:
-                        status_emoji = "🔴"
-                        status_text = "PUMP CAO"
-                    elif score >= 60:
-                        status_emoji = "🟡"
-                        status_text = "PUMP VỪA"
+                    # Status
+                    if score >= 60:
+                        msg += f"🔴 <b>Status: HOT — Khả năng PUMP cao!</b>\n"
                     elif score >= 40:
-                        status_emoji = "🟢"
-                        status_text = "PUMP YẾU"
+                        msg += f"🟡 <b>Status: WARM — Có dấu hiệu pump</b>\n"
+                    elif score >= 20:
+                        msg += f"🟢 <b>Status: MILD — Pump yếu/chưa rõ</b>\n"
                     else:
-                        status_emoji = "⚪"
-                        status_text = "KHÔNG PUMP"
+                        msg += f"⚪ <b>Status: COLD — Không có dấu hiệu pump</b>\n"
                     
-                    msg += f"{status_emoji} <b>Status:</b> {status_text}\n"
-                    msg += f"<b>🎯 Final Score:</b> {score:.0f}%\n\n"
+                    # Score bar
+                    filled = min(5, score // 20)
+                    score_bar = "█" * filled + "░" * (5 - filled)
+                    msg += f"🎯 Pump Score: [{score_bar}] <b>{score}/100</b>\n\n"
                     
-                    # Layer breakdown
-                    if 'layer1' in pump_result and pump_result['layer1']:
-                        layer1 = pump_result['layer1']
-                        msg += f"   ⚡ Layer 1 (5m): {layer1['pump_score']:.0f}%\n"
+                    # Price changes
+                    msg += f"📊 <b>Biến động giá:</b>\n"
+                    msg += f"   5m: {pump_data.get('chg_5m', 0):+.2f}%"
+                    msg += f" | 30m: {pump_data.get('chg_30m', 0):+.2f}%"
+                    msg += f" | 1H: {pump_data.get('chg_1h', 0):+.2f}%\n\n"
                     
-                    if 'layer2' in pump_result and pump_result['layer2']:
-                        layer2 = pump_result['layer2']
-                        msg += f"   ✅ Layer 2 (1h/4h): {layer2['pump_score']:.0f}%\n"
+                    # Volume Spike
+                    v5m = pump_data.get('vol_spike_5m', 0)
+                    v1h = pump_data.get('vol_spike_1h', 0)
+                    v5m_icon = "🔥" if v5m > 2 else "📊"
+                    v1h_icon = "🔥" if v1h > 2 else "📊"
+                    msg += f"{v5m_icon} <b>Volume 5m:</b> {v5m:.1f}x so với TB\n"
+                    msg += f"{v1h_icon} <b>Volume 1H:</b> {v1h:.1f}x so với TB\n\n"
                     
-                    if 'layer3' in pump_result and pump_result['layer3']:
-                        layer3 = pump_result['layer3']
-                        msg += f"   📈 Layer 3 (1D): {layer3['pump_score']:.0f}%\n"
+                    # RSI
+                    rsi5 = pump_data.get('rsi_5m', 0)
+                    rsi1h = pump_data.get('rsi_1h', 0)
+                    rsi_mom = pump_data.get('rsi_momentum', 0)
+                    rsi5_icon = "🔴" if rsi5 > 70 else ("🟢" if rsi5 < 30 else "🔵")
+                    rsi1h_icon = "🔴" if rsi1h > 70 else ("🟢" if rsi1h < 30 else "🔵")
+                    msg += f"{rsi5_icon} <b>RSI 5m:</b> {rsi5:.1f}"
+                    msg += f" | {rsi1h_icon} <b>RSI 1H:</b> {rsi1h:.1f}"
+                    msg += f" | Δ{rsi_mom:+.1f}\n"
+                    
+                    # OBV
+                    obv_icon = "💰" if pump_data.get('obv_trend') == "INFLOW" else "🔻"
+                    msg += f"{obv_icon} <b>OBV:</b> {pump_data.get('obv_trend', 'N/A')}"
+                    obv_chg = pump_data.get('obv_change', 0)
+                    if abs(obv_chg) > 0:
+                        msg += f" ({obv_chg:+,.0f})"
+                    msg += "\n"
+                    
+                    # Order Book
+                    ob_r = pump_data.get('ob_ratio', 0)
+                    cost = pump_data.get('cost_5pct', 0)
+                    if ob_r > 0:
+                        ob_icon = "🧱" if ob_r > 2 else "📋"
+                        msg += f"{ob_icon} <b>Buy/Sell ratio:</b> {ob_r:.1f}x"
+                        if cost > 0:
+                            msg += f" | <b>Push 5%:</b> ${cost:,.0f}"
+                        msg += "\n"
+                    
+                    # Buy Pressure
+                    bp = pump_data.get('buy_ratio', 0)
+                    bp_icon = "💪" if bp > 0.6 else "📊"
+                    msg += f"{bp_icon} <b>Buy Pressure:</b> {bp*100:.0f}% ({int(bp*20)}/20 green)\n\n"
+                    
+                    # Risk warnings
+                    if rsi5 > 80 or rsi1h > 80:
+                        msg += f"⚠️ <b>CẢNH BÁO:</b> RSI quá cao — Rủi ro điều chỉnh!\n"
+                    if cost > 0 and cost < 20000:
+                        msg += f"⚠️ <b>CẢNH BÁO:</b> Thanh khoản rất mỏng — Dễ bị thao túng!\n"
+                    if ob_r > 5:
+                        msg += f"🐋 <b>CẠN CUNG:</b> Buy gấp {ob_r:.1f}x Sell — Rất mạnh!\n"
+                    
+                    msg += "\n"
                 else:
-                    msg += "⚪ <b>Status:</b> Không có tín hiệu pump rõ ràng\n"
+                    if pump_error:
+                        msg += f"⚪ Pump data error: {pump_error}\n\n"
+                    else:
+                        msg += "⚪ Không có dữ liệu pump (lỗi API)\n\n"
+                
+                # Also show Layer detection if available
+                if pump_result and 'final_score' in pump_result:
+                    layer_score = pump_result['final_score']
+                    msg += f"<b>📋 3-Layer Detection:</b> {layer_score:.0f}%\n"
+                    if 'layer1' in pump_result and pump_result['layer1']:
+                        msg += f"   ⚡ L1 (5m): {pump_result['layer1']['pump_score']:.0f}%\n"
+                    if 'layer2' in pump_result and pump_result['layer2']:
+                        msg += f"   ✅ L2 (1h/4h): {pump_result['layer2']['pump_score']:.0f}%\n"
+                    if 'layer3' in pump_result and pump_result['layer3']:
+                        msg += f"   📈 L3 (1D): {pump_result['layer3']['pump_score']:.0f}%\n"
                 
                 msg += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                 

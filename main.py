@@ -8,6 +8,7 @@ import time
 import logging
 from datetime import datetime
 import sys
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -436,9 +437,19 @@ class TradingBot:
         try:
             logger.info("Starting command handler (blocking mode)...")
             self.command_handler.start_polling()
+            
         except KeyboardInterrupt:
             logger.info("Bot stopped by user")
-            self.telegram.send_message("🛑 <b>Bot stopped by user</b>")
+            # Auto-backup trigger on exit
+            if hasattr(self.command_handler, 'watchlist'):
+                 self.command_handler.watchlist.save()
+                 logger.info("✅ Watchlist saved on exit")
+            if hasattr(self.command_handler, 'pump_detector') and hasattr(self.command_handler.pump_detector, '_save_history'):
+                 self.command_handler.pump_detector._save_history()
+                 logger.info("✅ Pump history saved on exit")
+                 
+            self.telegram.send_message("🛑 <b>Bot shutting down - Data Saved</b>")
+            
         except Exception as e:
             logger.error(f"Error in command handler: {e}")
             self.telegram.send_message(f"❌ <b>Bot error:</b> {str(e)}")

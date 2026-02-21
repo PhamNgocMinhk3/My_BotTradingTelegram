@@ -318,12 +318,13 @@ class AdvancedPumpDumpDetector:
         recent = klines.tail(50)
         
         # === 1. VWAP DEVIATION ===
-        # Volume thực sẽ có VWAP gần close price
+        # Volume thực sẽ có VWAP gần close price, nhưng pump mạnh có thể lệch
         try:
             recent['vwap'] = (recent['volume'] * (recent['high'] + recent['low'] + recent['close']) / 3).cumsum() / recent['volume'].cumsum()
             vwap_dev = abs((recent['close'].iloc[-1] - recent['vwap'].iloc[-1]) / recent['close'].iloc[-1] * 100)
             
-            vwap_score = max(0, 100 - vwap_dev * 20)  # Càng lệch VWAP càng thấp điểm
+            # Less strict penalty: Allow up to 5% deviation for pumps
+            vwap_score = max(0, 100 - max(0, vwap_dev - 2) * 15)
         except:
             vwap_score = 50
             vwap_dev = 0
@@ -339,10 +340,10 @@ class AdvancedPumpDumpDetector:
                 if total > 0:
                     analysis['buy_sell_ratio'] = buy_volume / sell_volume if sell_volume > 0 else 10
                     
-                    # Ratio cân bằng (0.7-1.3) = legitimate
-                    if 0.7 <= analysis['buy_sell_ratio'] <= 1.3:
+                    # WIDENED RANGE: 0.5-2.5 is normal for volatile coins
+                    if 0.5 <= analysis['buy_sell_ratio'] <= 2.5:
                         ratio_score = 100
-                    elif 0.5 <= analysis['buy_sell_ratio'] <= 1.5:
+                    elif 0.3 <= analysis['buy_sell_ratio'] <= 4.0:
                         ratio_score = 70
                     else:
                         ratio_score = 40
@@ -359,8 +360,8 @@ class AdvancedPumpDumpDetector:
                 
                 analysis['large_trades_pct'] = len(large_trades) / len(trades) * 100
                 
-                # 5-20% large trades = healthy
-                if 5 <= analysis['large_trades_pct'] <= 20:
+                # Allow up to 30% large trades for institutional moves
+                if 5 <= analysis['large_trades_pct'] <= 30:
                     large_score = 100
                 elif analysis['large_trades_pct'] < 5:
                     large_score = 60  # Quá ít whale = retail only
@@ -380,22 +381,23 @@ class AdvancedPumpDumpDetector:
                 
                 if cv < 0.5:
                     cluster_score = 40  # Quá đồng đều = bot
-                elif cv < 1.0:
+                elif cv < 2.0: # Allow higher variance for pumps (spiky volume)
                     cluster_score = 100  # Lý tưởng
                 else:
-                    cluster_score = 60  # Quá phân tán = spike giả
+                    cluster_score = 60  # Quá phân tán
         except:
             pass
         
         # === TÍNH TỔNG ===
         analysis['legitimacy_score'] = int((vwap_score * 0.3 + ratio_score * 0.3 + large_score * 0.2 + cluster_score * 0.2))
-        analysis['is_legitimate'] = analysis['legitimacy_score'] >= 65
+        # LOWER THRESHOLD: 60 is enough for legit check
+        analysis['is_legitimate'] = analysis['legitimacy_score'] >= 60
         
         if analysis['legitimacy_score'] >= 80:
             analysis['volume_quality'] = 'EXCELLENT'
-        elif analysis['legitimacy_score'] >= 65:
+        elif analysis['legitimacy_score'] >= 60:
             analysis['volume_quality'] = 'GOOD'
-        elif analysis['legitimacy_score'] >= 50:
+        elif analysis['legitimacy_score'] >= 45:
             analysis['volume_quality'] = 'FAIR'
         else:
             analysis['volume_quality'] = 'POOR'
@@ -586,6 +588,527 @@ class AdvancedPumpDumpDetector:
         
         return analysis
     
+        return analysis
+
+    def _estimate_pump_time(self, klines: pd.DataFrame) -> str:
+        """
+        Estimate time until pump based on Market Phase (Accumulation vs Breakout)
+        Uses Bollinger Band Squeeze & Volume trends.
+        """
+        try:
+            # 1. Calculate Bollinger Bands & Band Width (Squeeze)
+            close = klines['close'].astype(float)
+            
+            # Use min_periods to handle initial data
+            rolling_mean = close.rolling(window=20, min_periods=20).mean()
+            rolling_std = close.rolling(window=20, min_periods=20).std()
+            
+            upper_band = rolling_mean + (rolling_std * 2)
+            lower_band = rolling_mean - (rolling_std * 2)
+            
+            # Band Width: (Upper - Lower) / Middle
+            # Handle potential division by zero or NaN
+            bbw = (upper_band - lower_band) / rolling_mean
+            
+            # Need at least one valid BBW value
+            if bbw.dropna().empty:
+                 return "Unknown (Thiếu dữ liệu BBW)"
+                 
+            current_bbw = float(bbw.iloc[-1])
+            
+            # Rolling average of BBW (needs history)
+            # If not enough history for 50, use what we have (min 10)
+            avg_bbw_series = bbw.rolling(window=50, min_periods=10).mean()
+            
+            if avg_bbw_series.dropna().empty:
+                avg_bbw = current_bbw # Fallback
+            else:
+                avg_bbw = float(avg_bbw_series.iloc[-1])
+            
+            if np.isnan(current_bbw) or np.isnan(avg_bbw) or avg_bbw == 0:
+                is_squeeze = False
+            else:
+                is_squeeze = current_bbw < (avg_bbw * 0.8) # Squeeze if 20% tighter than average
+            
+            # 2. Volume Analysis
+            recent_vol = klines['volume'].tail(3).mean()
+            avg_vol = klines['volume'].tail(50).mean()
+            vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1.0
+            
+            # 3. Consolidation Duration (Low Volatility)
+            low_vol_count = 0
+            for i in range(len(klines)-1, -1, -1):
+                high = float(klines.iloc[i]['high'])
+                low = float(klines.iloc[i]['low'])
+                volatility = (high - low) / low
+                if volatility < 0.02: # < 2% range
+                    low_vol_count += 1
+                else:
+                    break
+            
+            # === TIMING LOGIC ===
+            
+            # CASE A: BREAKOUT IMMINENT (High Volume + Breaking Out)
+            if vol_ratio > 3.0:
+                return "5-15 phút (ĐỘT BIẾN VOLUME 🚨)"
+            if vol_ratio > 2.0 and is_squeeze:
+                 return "15-30 phút (SQUEEZE BREAKOUT)"
+                 
+            # CASE B: PRE-BREAKOUT (Squeeze + Slight Volume Increase)
+            if is_squeeze and vol_ratio > 1.2:
+                return "1-4 giờ (Chuẩn bị Break)"
+            
+            # CASE C: ACCUMULATION (Long Consolidation)
+            # Assuming 1h candles
+            if low_vol_count > 48: # > 2 days
+                return "24-48 giờ (Gom hàng dài hạn)"
+            elif low_vol_count > 24: # > 1 day
+                return "12-24 giờ (Gom hàng)"
+            elif low_vol_count > 10:
+                return "4-12 giờ"
+            
+            # CASE D: NORMAL / UNKNOWN
+            if vol_ratio < 0.8:
+                return "Chưa rõ (Volume thấp)"
+            else:
+                return "Trong 24h tới"
+                
+        except Exception as e:
+            logger.error(f"Error estimating pump time: {e}")
+            print(f"DEBUG ERROR estimating pump time: {e}") # Force print
+            traceback.print_exc()
+
+    def _calculate_entry_zone(self, klines: pd.DataFrame) -> Tuple[float, float]:
+        """
+        Calculate Safe Entry Zone based on Support & VWAP
+        Logic:
+        - Support: Lowest Low of last 6 candles
+        - Fair Value: VWAP
+        - Dynamic Support: EMA 25
+        """
+        try:
+            # 1. Calculate VWAP
+            klines['tp'] = (klines['high'] + klines['low'] + klines['close']) / 3
+            klines['vwap'] = (klines['tp'] * klines['volume']).cumsum() / klines['volume'].cumsum()
+            vwap = float(klines.iloc[-1]['vwap'])
+            
+            # 2. Calculate Support (Lowest of last 6)
+            recent_low = float(klines['low'].tail(6).min())
+            
+            # 3. Calculate EMA 25 (Dynamic Support)
+            ema_25 = float(klines['close'].ewm(span=25, adjust=False).mean().iloc[-1])
+            
+            current_price = float(klines.iloc[-1]['close'])
+            
+            # === ZONE LOGIC ===
+            # If Price > VWAP (Uptrend): Entry at VWAP retest or EMA25
+            if current_price > vwap:
+                entry_high = vwap
+                entry_low = max(recent_low, ema_25)
+                # If EMA is too far below, tighten it to 1% below VWAP
+                if entry_low < vwap * 0.98:
+                    entry_low = vwap * 0.98
+            else:
+                # If Price < VWAP (Accumulation): Entry at Support to Current
+                entry_high = current_price
+                entry_low = recent_low
+            
+            # Ensure logical bounds
+            if entry_low > entry_high:
+                entry_low, entry_high = entry_high, entry_low
+                
+            return entry_low, entry_high
+            
+        except Exception as e:
+            logger.error(f"Error calculating entry zone: {e}")
+            close = float(klines.iloc[-1]['close'])
+            return close * 0.98, close
+
+    def _calculate_atr(self, klines: pd.DataFrame, period: int = 14) -> float:
+        """Calculate Average True Range (ATR)"""
+        try:
+            high = klines['high'].astype(float)
+            low = klines['low'].astype(float)
+            close = klines['close'].astype(float)
+            
+            tr1 = high - low
+            tr2 = abs(high - close.shift())
+            tr3 = abs(low - close.shift())
+            
+            tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+            atr = tr.ewm(alpha=1/period, adjust=False).mean()
+            
+            return float(atr.iloc[-1])
+        except Exception as e:
+            logger.error(f"Error calculating ATR: {e}")
+            return 0.0
+
+    def _calculate_dynamic_tp_sl(self, entry_price: float, atr: float, score: float, vol_ratio: float) -> dict:
+        """
+        Calculate Dynamic TP/SL based on ATR and Signal Strength
+        """
+        try:
+            # Base SL: -5% (Hard Stop) or ATR based
+            # System Rule: Watchlist removes if < -5%
+            hard_stop = entry_price * 0.95
+            
+            # Dynamic SL: Entry - 1.5 * ATR
+            if atr > 0:
+                dynamic_sl = entry_price - (1.5 * atr)
+                sl_price = max(hard_stop, dynamic_sl) # Take the higher (tighter) one, but never below hard stop? 
+                # Actually we want the wider one to avoid noise, but capped at -5%.
+                # So SL = min(Entry * 0.98, dynamic_sl) but not lower than 0.95?
+                # Let's stick to: Max risk 5%. If ATR suggests tighter, use ATR.
+                sl_price = max(hard_stop, dynamic_sl)
+            else:
+                sl_price = hard_stop
+
+            # Determine Signal Strength (Swing vs Quick)
+            # Strong: Score >= 80 OR Vol Ratio > 3.0
+            is_strong = (score >= 80) or (vol_ratio > 3.0)
+            
+            if atr > 0:
+                # TP1 (Quick/Base): Entry + 2 ATR (~3-5%)
+                tp1 = entry_price + (2.0 * atr)
+                
+                # TP2 (Swing/Moon): Entry + 5 ATR (~8-12%+)
+                tp2 = entry_price + (5.0 * atr)
+            else:
+                # Fallback if ATR fails
+                tp1 = entry_price * 1.04
+                tp2 = entry_price * 1.10
+            
+            return {
+                'sl': sl_price,
+                'tp1': tp1,
+                'tp2': tp2,
+                'is_strong': is_strong,
+                'recommendation': 'GỒNG LÃI (Hold)' if is_strong else 'TP NGẮN HẠN (Quick)'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating TP/SL: {e}")
+            return {
+                'sl': entry_price * 0.95,
+                'tp1': entry_price * 1.04,
+                'tp2': entry_price * 1.10,
+                'is_strong': False,
+                'recommendation': 'TP NGẮN HẠN'
+            }
+
+            return f"Error: {str(e)}"
+
+    def _analyze_supply_shock(self, order_book: Dict, current_price: float) -> Dict:
+        """
+        Phân tích Supply Shock (Cạn Cung) - Layer 4
+        - Tính volume bán trong phạm vi 5% (Sell Pressure)
+        - Tính volume mua trong phạm vi 5% (Buy Support)
+        - Xác định xem phe bán có mỏng không
+        """
+        try:
+            if not order_book:
+                return {'detected': False}
+
+            bids = order_book.get('bids', [])
+            asks = order_book.get('asks', [])
+
+            if not bids or not asks:
+                return {'detected': False}
+
+            # Calculate thresholds
+            upper_threshold = current_price * 1.05
+            lower_threshold = current_price * 0.95
+
+            # Calculate Sell Pressure (Volume up to +5%)
+            sell_volume_5pct = 0
+            cost_to_pump_5pct = 0
+            for price, qty in asks:
+                price = float(price)
+                qty = float(qty)
+                if price <= upper_threshold:
+                    sell_volume_5pct += qty
+                    cost_to_pump_5pct += price * qty
+                else:
+                    break
+
+            # Calculate Buy Support (Volume down to -5%)
+            buy_volume_5pct = 0
+            for price, qty in bids:
+                price = float(price)
+                qty = float(qty)
+                if price >= lower_threshold:
+                    buy_volume_5pct += qty
+                else:
+                    break
+
+            # Calculate Ratio
+            if sell_volume_5pct > 0:
+                buy_sell_ratio = buy_volume_5pct / sell_volume_5pct
+            else:
+                buy_sell_ratio = 100 # Infinite ratio if no sellers
+
+            # Criteria for Supply Shock:
+            # 1. Buy Support is 2x stronger than Sell Pressure (Strong Hands holding)
+            # OR 2. Cost to pump 5% is very low (< $100k for mid-caps)
+            is_supply_shock = buy_sell_ratio >= 2.0 or (cost_to_pump_5pct < 100000 and cost_to_pump_5pct > 0)
+
+            return {
+                'detected': is_supply_shock,
+                'ratio': buy_sell_ratio,
+                'sell_volume_5pct': sell_volume_5pct,
+                'buy_volume_5pct': buy_volume_5pct,
+                'cost_to_push_5pct': cost_to_pump_5pct
+            }
+
+        except Exception as e:
+            logger.error(f"Error in supply shock analysis: {e}")
+            return {'detected': False}
+
+    def _detect_stealth_accumulation(self, klines: pd.DataFrame, ticker_data: Optional[Dict] = None, symbol: str = "") -> Dict:
+        """
+        DETECT STEALTH ACCUMULATION (THE "GEMINI" SIGNAL)
+        
+        Criteria:
+        1. Price Compression: Volatility low and decreasing.
+        2. Volume Divergence: Volume increases/spikes while price stays flat.
+        3. OBV Divergence: OBV moves up while price is flat.
+        4. RSI Accumulation: RSI in 30-60 zone.
+        5. 24h Volume Growth: Rolling 24h volume is trending up (Realtime).
+        """
+        analysis = {
+            'detected': False,
+            'confidence': 0,
+            'quality_score': 0,
+            'reason': [],
+            'evidence': [],
+            'pump_time': "Unknown"
+        }
+        
+        if klines.empty or len(klines) < 50:
+            return analysis
+            
+        recent = klines.tail(50)
+        
+        # 1. Low Volatility (Giá nén chặt)
+        high_low_range = (recent['high'] - recent['low']) / recent['low']
+        avg_volatility = high_low_range.mean()
+        
+        # OPTIMIZED: Relaxed from 1.5% to 2.5% to catch more coins like ME
+        is_compressed = avg_volatility < 0.025
+        
+        # 2. Volume Anomalies (Volume tăng trong khi giá đi ngang)
+        # Chia 50 nến thành 2 nửa: 25 nến đầu và 25 nến cuối
+        vol_first_half = recent['volume'].iloc[:25].mean()
+        vol_second_half = recent['volume'].iloc[25:].mean()
+        
+        is_vol_increasing = vol_second_half > vol_first_half * 1.2  # Volume tăng 20%
+        
+        # 3. OBV Divergence (Giá ngang, OBV tăng)
+        # Tính OBV đơn giản
+        obv = (np.sign(recent['close'].diff()) * recent['volume']).cumsum()
+        obv_trend = np.polyfit(range(len(obv.fillna(0))), obv.fillna(0).values, 1)[0]
+        price_trend = np.polyfit(range(len(recent)), recent['close'].values, 1)[0]
+        
+        # OBV tăng mạnh trong khi giá đi ngang hoặc giảm nhẹ
+        is_obv_divergence = obv_trend > 0 and abs(price_trend) < 0.0001
+        
+        # 4. RSI Check (NEW) - RSI in accumulation zone (30-60) is ideal
+        try:
+            delta = recent['close'].diff()
+            gain = delta.where(delta > 0, 0.0)
+            loss = -delta.where(delta < 0, 0.0)
+            avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+            avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            current_rsi = float(rsi.iloc[-1])
+            is_rsi_accumulation = 30 <= current_rsi <= 60
+        except:
+            current_rsi = 50
+            is_rsi_accumulation = False
+        
+        # 5. Buy Pressure (Refined) - Volume Based
+        # Calculates the ratio of Volume on Green Candles vs Total Volume
+        buy_volume = 0.0
+        sell_volume = 0.0
+        
+        for i in range(len(recent)-20, len(recent)):
+            try:
+                c_close = float(recent['close'].iloc[i])
+                c_open = float(recent['open'].iloc[i])
+                c_vol = float(recent['volume'].iloc[i])
+                
+                if c_close >= c_open:
+                    buy_volume += c_vol
+                else:
+                    sell_volume += c_vol
+            except:
+                continue
+                
+        total_recent_vol = buy_volume + sell_volume
+        buy_ratio = 0.5 # Default neutral
+        if total_recent_vol > 0:
+            buy_ratio = buy_volume / total_recent_vol
+            
+        is_buy_dominant = buy_ratio > 0.55
+        
+        # DEBUG PRINT
+        # print(f"DEBUG: Comp={is_compressed} ({avg_volatility:.4f}), VolInc={is_vol_increasing}, OBV={is_obv_divergence}, Buy={is_buy_dominant}")
+        
+        if is_compressed and (is_vol_increasing or is_obv_divergence):
+            analysis['detected'] = True
+            
+            # Estimate Pump Time
+            try:
+                pump_time = self._estimate_pump_time(klines)
+                analysis['pump_time'] = pump_time
+                analysis['evidence'].append(f"⏳ Dự Kiến Pump: {pump_time}")
+            except Exception as e:
+                logger.error(f"Error adding pump time: {e}")
+                analysis['pump_time'] = "Unknown"
+            
+            # --- SCORING SYSTEM (GEMINI SCORE) --- FIXED ---
+            # 1. Compression Score (Max 30) - Lower volatility is better
+            # avg_volatility < 0.025 (2.5%) is threshold
+            # OLD: 30 - (vol * 1200) -> Too harsh for 1.5% vol
+            # NEW: 30 - (vol * 600) -> 1.5% vol gets 21 pts (was 12)
+            compression_score = max(0, 30 - (avg_volatility * 600))
+            
+            # 2. Volume Score (Max 25) - Higher increase is better
+            # Increase > 20% is threshold
+            # 1.2x -> 12 pts, 2.0x -> 25 pts
+            # FIX: Clamp to 0. Do not penalize low volume (accumulation often has low vol)
+            vol_ratio = vol_second_half / vol_first_half if vol_first_half > 0 else 1
+            volume_score = max(0, min(25, (vol_ratio - 1) * 25))
+            
+            # 3. OBV Score (Max 25) - Higher divergence is better
+            obv_score = 25 if is_obv_divergence else 0
+            
+            # 4. RSI Bonus (Max 10) - RSI in accumulation zone
+            rsi_bonus = 10 if is_rsi_accumulation else 0
+            
+            # 5. Buy Pressure Bonus (Max 10) - Using Volume Ratio
+            # 50% -> 0 pts, 75% -> 10 pts
+            buy_bonus = int(min(10, max(0, (buy_ratio - 0.5) * 40)))
+            
+            # 6. Pattern Bonus - Valid detection base points
+            pattern_bonus = 15  # Max 15 (was accidentally set to 20)
+
+            # 7. 24h Volume Trend Bonus (New) - increasing 24h Vol & USDT Vol
+            # User request: Check if 24h Vol (Coin) and 24h Vol (USDT) are increasing
+            vol_growth_bonus = 0
+            curr_vol_24h = 0
+            curr_qav_24h = 0
+            
+            # Read volume and price change from ticker first (safe)
+            price_change_24h = 0
+            if ticker_data:
+                curr_vol_24h = float(ticker_data.get('volume', 0))
+                curr_qav_24h = float(ticker_data.get('quoteVolume', 0))
+                price_change_24h = float(ticker_data.get('priceChangePercent', 0))
+            
+            # Count recent red candles (last 6)
+            recent_6 = klines.tail(6)
+            red_count = sum(1 for _, r in recent_6.iterrows() 
+                          if float(r['close']) < float(r['open']))
+            analysis['red_candles_6'] = red_count
+            analysis['price_change_24h'] = price_change_24h
+            
+            # Compare with kline data (may fail, but don't reset vol values)
+            try:
+                if curr_vol_24h > 0:
+                    prev_vol_24h = klines.iloc[-25:-1]['volume'].astype(float).sum()
+                    prev_qav_24h = klines.iloc[-25:-1]['quote_volume'].astype(float).sum()
+                    
+                    if curr_vol_24h > prev_vol_24h and curr_qav_24h > prev_qav_24h:
+                        vol_growth_bonus = 5
+                        growth_pct = ((curr_vol_24h / prev_vol_24h) - 1) * 100
+                        analysis['evidence'].append(f"• Tăng Trưởng Vol 24h: +5 (Thực Tế: {growth_pct:.1f}%)")
+            except Exception as e:
+                logger.error(f"Error calculating 24h vol trend: {e}")
+
+            # 8. Funding Rate Analysis (Short Squeeze Potential)
+            # Negative Funding (< 0) -> Bonus
+            # Always show funding rate for visibility
+            funding_rate = 0.0
+            funding_bonus = 0
+            try:
+                funding_rate = self.binance.get_funding_rate(symbol)
+                
+                if funding_rate < 0:
+                    funding_bonus = 5
+                    if funding_rate < -0.0001: # -0.01%
+                        funding_bonus = 10
+                        analysis['evidence'].append(f"🩸 Funding Rate Âm: {funding_rate*100:.4f}% (Cảnh báo Short Squeeze)")
+                    else:
+                        analysis['evidence'].append(f"📉 Funding Rate: {funding_rate*100:.4f}% (Ủng hộ Tăng)")
+                else:
+                    # Positive funding - Neutral info
+                    analysis['evidence'].append(f"Funding Rate: {funding_rate*100:.4f}%")
+                    
+            except Exception as e:
+                pass
+
+
+            total_score = int(compression_score + volume_score + obv_score + rsi_bonus + buy_bonus + pattern_bonus + vol_growth_bonus + funding_bonus)
+            
+            # Store Realtime Volume Data for Smart Alerts
+            analysis['vol_24h'] = curr_vol_24h
+            analysis['vol_24h_usdt'] = curr_qav_24h
+            
+            # Store key metrics for Signal Ranking System
+            analysis['funding_rate'] = funding_rate
+            analysis['vol_ratio'] = vol_ratio
+            
+            # Store individual scores for alert gating
+            analysis['obv_score'] = obv_score
+            analysis['buy_bonus'] = buy_bonus
+            
+            # QUALITY GATE: Penalize if BOTH OBV and Buy Pressure are 0
+            # (means only volume spike is driving the score — not real accumulation)
+            if obv_score == 0 and buy_bonus == 0:
+                penalty = 15
+                total_score -= penalty
+                analysis['evidence'].append(f"⚠️ Cảnh báo: Không có OBV & Áp Lực Mua (-{penalty} điểm)")
+            
+            # Bonus: Supply Shock Potential (low MC, high compression)
+            if avg_volatility < 0.01:  # Really tight
+                total_score += 10
+                
+            # Cap at 100
+            analysis['quality_score'] = min(100, max(0, total_score))
+            
+            # Strict Mode Filter (> 80 is very high quality, > 60 is good)
+            analysis['confidence'] = analysis['quality_score']
+            
+            analysis['evidence'].append(f"Gom Hàng Ẩn (Stealth): Điểm {analysis['quality_score']}/100")
+            analysis['evidence'].append(f"• Độ Nén Giá: {compression_score:.1f}/30 (Biến Động: {avg_volatility*100:.2f}%)")
+            analysis['evidence'].append(f"• Dòng Vol Vào: {volume_score:.1f}/25 (Tỷ Lệ: {vol_ratio:.2f}x)")
+            analysis['evidence'].append(f"• Dòng Tiền OBV: {obv_score}/25")
+            analysis['evidence'].append(f"• Vùng RSI Gom: {rsi_bonus}/10")
+            analysis['evidence'].append(f"• Áp Lực Mua: {buy_bonus}/10")
+            analysis['evidence'].append(f"• Mô Hình Bonus: {pattern_bonus}/15")
+            
+            # Calculate Entry Zone
+            entry_low, entry_high = self._calculate_entry_zone(klines)
+            analysis['entry_zone'] = (entry_low, entry_high)
+            
+            # Calculate ATR for TP/SL
+            atr = self._calculate_atr(klines)
+            
+            # Calculate TP/SL
+            # Use avg entry price for calculation
+            avg_entry = (entry_low + entry_high) / 2
+            tp_sl_info = self._calculate_dynamic_tp_sl(
+                avg_entry, 
+                atr, 
+                analysis['quality_score'], 
+                analysis['vol_ratio']
+            )
+            analysis['tp_sl_info'] = tp_sl_info
+            
+        return analysis
+
     def _detect_institutional_activity(self, klines: pd.DataFrame, trades: List[Dict], market_data: Dict) -> Dict:
         """
         QUAN TRỌNG NHẤT! (30 points)
@@ -594,6 +1117,7 @@ class AdvancedPumpDumpDetector:
         - Large block trades
         - Accumulation/Distribution patterns
         - Wyckoff analysis
+        - Upgrade: STEALTH ACCUMULATION (Gemini X2 logic)
         """
         
         analysis = {
@@ -603,12 +1127,21 @@ class AdvancedPumpDumpDetector:
             'block_trades_detected': False,
             'smart_money_flow': 'NEUTRAL',  # INFLOW | OUTFLOW | NEUTRAL
             'confidence': 0,
-            'evidence': []
+            'evidence': [],
+            'stealth_accumulation': False  # New flag
         }
         
         if klines.empty:
             return analysis
         
+        # === 0. STEALTH ACCUMULATION (GEMINI X2) ===
+        stealth = self._detect_stealth_accumulation(klines)
+        if stealth['detected']:
+            analysis['stealth_accumulation'] = True
+            analysis['activity_type'] = 'ACCUMULATION'
+            analysis['evidence'].extend(stealth['evidence'])
+            analysis['evidence'].append("💎 TÍN HIỆU GEMINI X2 DETECTED")
+
         # === 1. BLOCK TRADES DETECTION ===
         if trades and len(trades) > 100:
             try:
@@ -667,6 +1200,9 @@ class AdvancedPumpDumpDetector:
         
         # === INSTITUTIONAL SCORE ===
         score = 0
+        
+        if analysis['stealth_accumulation']:
+            score += 50  # Very high weight for Gemini X2 pattern
         
         if analysis['block_trades_detected']:
             score += 40

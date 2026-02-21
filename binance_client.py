@@ -20,6 +20,7 @@ class BinanceClient:
     def __init__(self, api_key, api_secret):
         """Initialize Binance client"""
         self.client = Client(api_key, api_secret)
+        self.last_error = None
         # Ensure the underlying requests session has a sufficiently large connection pool
         # to avoid "Connection pool is full" warnings when the application makes many
         # concurrent requests (e.g., scanning hundreds of symbols).
@@ -55,15 +56,23 @@ class BinanceClient:
             time.sleep(self._min_request_interval - elapsed)
         self._last_request_time = time.time()
     
-    def _get_cached_klines(self, symbol, interval):
-        """Get klines from cache if available and fresh"""
+    def _get_cached_klines(self, symbol, interval, min_limit=None):
+        """Get klines from cache if available, fresh, and sufficient"""
         cache_key = (symbol, interval)
         if cache_key in self._klines_cache:
             cached = self._klines_cache[cache_key]
+            
+            # Check age
             age = datetime.now() - cached['timestamp']
             if age.total_seconds() < self._cache_duration:
+                # Check if we have enough data
+                df = cached['data']
+                if min_limit and len(df) < min_limit:
+                    logger.debug(f"Cache hit but insufficient data for {symbol} {interval} (have {len(df)}, need {min_limit})")
+                    return None
+                
                 logger.debug(f"Cache hit for {symbol} {interval} (age: {age.total_seconds():.1f}s)")
-                return cached['data']
+                return df
             else:
                 # Cache expired, remove it - safe deletion of specific key
                 try:
@@ -254,11 +263,18 @@ class BinanceClient:
         Returns:
             pandas DataFrame with OHLCV data
         """
+        self.last_error = None  # Reset error
+        self.last_debug_info = "Init"
         try:
             # Check cache first
-            cached_data = self._get_cached_klines(symbol, interval)
+            cached_data = self._get_cached_klines(symbol, interval, min_limit=limit)
             if cached_data is not None:
+                self.last_debug_info = f"Cache HIT len={len(cached_data)}"
+                logger.info(f"DEBUG: Cache HIT for {symbol} {interval} len={len(cached_data)}")
                 return cached_data
+            
+            self.last_debug_info = f"Cache MISS limit={limit} -> Calling API"
+            logger.info(f"DEBUG: Cache MISS for {symbol} {interval} limit={limit}. Calling API...")
             
             # Apply rate limiting before API call
             self._apply_rate_limit()
@@ -268,6 +284,8 @@ class BinanceClient:
                 interval=interval,
                 limit=limit
             )
+            self.last_debug_info += f" -> API returned {len(klines)}"
+            logger.info(f"DEBUG: API returned {len(klines)} klines for {symbol} {interval} (requested {limit})")
             
             # Convert to DataFrame
             df = pd.DataFrame(klines, columns=[
@@ -290,10 +308,8 @@ class BinanceClient:
             logger.debug(f"Fetched {symbol} {interval} from API (cached for {self._cache_duration}s)")
             return df
             
-        except BinanceAPIException as e:
-            logger.error(f"Binance API error for {symbol}: {e}")
-            return None
         except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
             logger.error(f"Error getting klines for {symbol}: {e}")
             return None
     
@@ -366,3 +382,29 @@ class BinanceClient:
         except Exception as e:
             logger.error(f"Binance API connection failed: {e}")
             return False
+
+    def get_funding_rate(self, symbol):
+        """
+        Get latest Futures Funding Rate for a symbol
+        Returns: float (e.g. 0.0001 for 0.01%, -0.0005 for -0.05%)
+        """
+        try:
+            # futures_mark_price returns {'symbol': '...', 'lastFundingRate': '...', ...}
+            # Note: client.futures_mark_price is the correct endpoint for real-time funding
+            data = self.client.futures_mark_price(symbol=symbol)
+            if isinstance(data, dict):
+                return float(data.get('lastFundingRate', 0))
+            return 0.0
+        except Exception as e:
+            # logger.debug(f"Funding rate not available for {symbol}: {e}") # Reduce noise
+            return 0.0
+            
+    def get_order_book(self, symbol, limit=100):
+        """
+        Get order book (depth)
+        """
+        try:
+            return self.client.get_order_book(symbol=symbol, limit=limit)
+        except Exception as e:
+            logger.error(f"Error getting order book for {symbol}: {e}")
+            return None

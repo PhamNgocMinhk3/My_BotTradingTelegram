@@ -13,7 +13,8 @@ Author: AI Assistant
 Date: November 20, 2025
 """
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types as genai_types
 import json
 import logging
 from datetime import datetime, timedelta
@@ -106,9 +107,14 @@ class GeminiAnalyzer:
             except Exception as e:
                 logger.warning(f"⚠️ Failed to initialize Advanced Detector: {e}")
         
-        # Configure Gemini
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-2.5-flash')
+        # Configure Gemini with new google.genai SDK
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-flash'
+        # Google Search grounding config
+        self.generate_config = genai_types.GenerateContentConfig(
+            tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())]
+        )
+        logger.info("Gemini client initialized with google.genai SDK")
         
         # Cache system (15 minutes)
         self.cache = {}  # {symbol: {'data': result, 'timestamp': time.time()}}
@@ -118,7 +124,7 @@ class GeminiAnalyzer:
         self.last_request_time = 0
         self.min_request_interval = 1.0  # 1 second between requests
         
-        logger.info("✅ Gemini AI Analyzer v3.3 initialized (gemini-2.5-flash + Advanced Detection + Institutional indicators)")
+        logger.info("✅ Gemini AI Analyzer v3.3 initialized (gemini-2.5-flash + Google Search Grounding + Advanced Detection)")
     
     def _check_cache(self, symbol: str) -> Optional[Dict]:
         """
@@ -1334,37 +1340,94 @@ class GeminiAnalyzer:
                 logger.warning(f"Failed to load historical context: {e}")
                 historical_context = ""
         
-        # Format RSI/MFI data
-        rsi_mfi_text = ""
-        if rsi_mfi and 'timeframes' in rsi_mfi:
-            for tf, analysis in rsi_mfi['timeframes'].items():
-                rsi_mfi_text += f"  {tf}: RSI={analysis['rsi']:.1f}, MFI={analysis['mfi']:.1f}, Signal={analysis['signal']}\n"
-            rsi_mfi_text += f"  Consensus: {rsi_mfi['consensus']} (Strength: {rsi_mfi['consensus_strength']}/4)\n"
+        # NOTE: RSI/MFI/Stoch formatting removed in v4.0 — bot calculates these internally
+        # AI prompt now focuses on pump validation, on-chain, and sentiment
         
-        # Format Stoch+RSI data
-        stoch_text = ""
-        if stoch_rsi and 'timeframes' in stoch_rsi:
-            for tf_data in stoch_rsi['timeframes']:
-                tf = tf_data['timeframe']
-                stoch_text += f"  {tf}: RSI={tf_data['rsi']:.1f}, Stoch={tf_data['stoch_k']:.1f}, Signal={tf_data['signal_text']}\n"
-            stoch_text += f"  Consensus: {stoch_rsi['consensus']} (Strength: {stoch_rsi['consensus_strength']}/4)\n"
+        # Format pump data (always show if available to give AI context)
+        pump_text = "No advanced pump/dump detection data available."
         
-        # Format pump data (only if high confidence >= 80%)
-        pump_text = "No high-confidence pump signal detected"
-        if pump and pump.get('final_score', 0) >= 80:
-            pump_text = f"""HIGH CONFIDENCE PUMP DETECTED:
-  Final Score: {pump['final_score']:.0f}%
-  Layer 1 (5m): {pump.get('layer1', {}).get('pump_score', 0):.0f}% - Early detection
-  Layer 2 (1h/4h): {pump.get('layer2', {}).get('pump_score', 0):.0f}% - Confirmation
-  Layer 3 (1D): {pump.get('layer3', {}).get('pump_score', 0):.0f}% - Long-term trend
+        # Check for 'advanced_detection' first (new system), then fall back to 'pump_data' (old system)
+        adv_detect = data.get('advanced_detection')
+        
+        if adv_detect:
+            signal = adv_detect.get('signal', 'NEUTRAL')
+            confidence = adv_detect.get('confidence', 0)
+            
+            pump_text = f"""ADVANCED PUMP/DUMP DETECTOR RESULT:
+  SIGNAL: {signal} (Confidence: {confidence}%)
   
-  Key Indicators:
-  - Volume spike: {pump.get('layer1', {}).get('indicators', {}).get('volume_spike', 0)}x
-  - Price change 5m: +{pump.get('layer1', {}).get('indicators', {}).get('price_change_5m', 0):.2f}%
-  - RSI momentum: +{pump.get('layer1', {}).get('indicators', {}).get('rsi_change', 0):.1f}
+  Bot Activity Analysis:
 """
+            # Add bot details
+            bots = adv_detect.get('bot_activity', {})
+            if bots:
+                for bot_type, info in bots.items():
+                    if info.get('detected'):
+                        pump_text += f"  - 🚨 {bot_type.upper()} DETECTED (Conf: {info.get('confidence')}%) - {info.get('details', '')}\n"
+            else:
+                pump_text += "  - No specific bot activity detected.\n"
+                
+            # Add Order Book Analysis
+            ob_analysis = adv_detect.get('order_book_analysis', {})
+            if ob_analysis:
+                pump_text += f"""
+  Order Book Analysis:
+  - Bid/Ask Ratio: {ob_analysis.get('bid_ask_ratio', 0):.2f} ({'Bullish' if ob_analysis.get('bid_ask_ratio', 0) > 1.2 else 'Bearish' if ob_analysis.get('bid_ask_ratio', 0) < 0.8 else 'Neutral'})
+  - Wall Pressure: {ob_analysis.get('wall_pressure', 'Neutral')}
+  - Liquidity Health: {ob_analysis.get('liquidity_health', 'Unknown')}
+"""
+
+            # Add Volume Analysis & Early Detection
+            vol_analysis = adv_detect.get('volume_analysis', {})
+            supply_shock = adv_detect.get('supply_shock', {})
+            pump_time = adv_detect.get('pump_time', 'Unknown')
+            
+            if vol_analysis:
+                 pump_text += f"""
+  Volume Analysis:
+  - Spike Detected: {'YES 🚨 (Whale Activity)' if vol_analysis.get('is_spike') else 'No'}
+  - Volume/Avg Ratio: {vol_analysis.get('volume_ratio', 0):.2f}x
+  - Buying Pressure: {vol_analysis.get('buy_pressure', 0):.1f}%
+"""
+            
+            # EARLY PUMP DETECTION SECTION
+            pump_text += f"""
+  EARLY PUMP DETECTION (Stealth & Accumulation):
+  - Stealth Accumulation: {'YES 🟢' if vol_analysis.get('volume_ratio', 0) > 2.0 and abs(market.get('price_change_24h', 0)) < 2.0 else 'No'}
+  - Supply Shock Risk: {'HIGH 🚨' if supply_shock.get('detected') else 'Normal'}
+    * Cost to push +5%: ${supply_shock.get('cost_to_push_5pct', 0):,.0f}
+    * Resistance Strength: {supply_shock.get('resistance_strength', 'Unknown')}
+  - Estimated Pump Time: {pump_time}
+"""
+                 
+        elif pump: # Fallback to old system if new one fails
+            if pump.get('final_score', 0) >= 50:
+                 pump_text = f"""POTENTIAL PUMP DETECTED (Legacy System):
+  Final Score: {pump['final_score']:.0f}%
+  Layer 1 (5m): {pump.get('layer1', {}).get('pump_score', 0):.0f}%
+  Volume Spike: {pump.get('layer1', {}).get('indicators', {}).get('volume_spike', 0)}x
+"""
+            else:
+                 pump_text = f"Normal market activity (Pump Score: {pump.get('final_score', 0):.0f}%)"
+                 
+        # Check if this is an update request (NEW UPDATE LOGIC)
+        pump_context_data = data.get('pump_data', {})
+        if isinstance(pump_context_data, dict) and pump_context_data.get('is_update_analysis'):
+            update_count = pump_context_data.get('update_count', 0)
+            diff = pump_context_data.get('last_update_diff', {})
+            
+            pump_text += f"\n\n🚨 LƯU Ý QUAN TRỌNG: Đây là bản CẬP NHẬT TÍN HIỆU lần {update_count}!\n"
+            pump_text += f"Bối cảnh (So với lần báo gần nhất):\n"
+            if diff:
+                if 'vol_pct' in diff:
+                     pump_text += f"  - Volume tăng thêm: +{diff['vol_pct']:.2f}%\n"
+                if 'curr_score' in diff and 'prev_score' in diff:
+                     pump_text += f"  - Điểm tín hiệu (Score): {diff['prev_score']} -> {diff['curr_score']}\n"
+                if 'curr_funding' in diff and 'prev_funding' in diff:
+                     pump_text += f"  - Funding Rate: {diff['prev_funding']*100:.4f}% -> {diff['curr_funding']*100:.4f}%\n"
+            pump_text += "\nNhiệm vụ bổ sung: Hãy phân tích Tác động của sự thay đổi này (Dòng tiền vào thêm, sự thay đổi động lượng) xem xu hướng có đủ mạnh để tiếp diễn hay rủi ro xả hàng đã tăng cao.\n"
         
-        # Format historical comparison
+        # Format historical comparison (kept for pump context)
         hist_text = "Historical data unavailable"
         if historical:
             hist_text = f"""Week-over-Week Comparison:
@@ -1657,1088 +1720,186 @@ SỬ DỤNG DỮ LIỆU NÀY ĐỂ:
 - Xác định trend consistency qua SMC structure
 """
         
-        # Format institutional indicators as JSON
-        institutional_json = self._format_institutional_indicators_json(data, market)
-        
-        # === NEW v2.2: ASSET TYPE DETECTION ===
+        # === v4.0: ASSET TYPE DETECTION ===
         asset_type = self._detect_asset_type(symbol)
         
-        # === NEW v2.2: DYNAMIC RISK MULTIPLIERS BY ASSET TYPE ===
-        risk_multiplier = {
-            'BTC': 1.0,
-            'ETH': 1.2,
-            'LARGE_CAP_ALT': 1.5,
-            'MID_CAP_ALT': 2.0,
-            'SMALL_CAP_ALT': 2.5,
-            'MEME_COIN': 3.0
-        }.get(asset_type, 2.0)
-        
-        position_sizing_guide = {
-            'BTC': '3-5% of portfolio',
-            'ETH': '2-3% of portfolio',
-            'LARGE_CAP_ALT': '1.5-2% of portfolio',
-            'MID_CAP_ALT': '1-1.5% of portfolio',
-            'SMALL_CAP_ALT': '0.5-1% of portfolio',
-            'MEME_COIN': '0.05-0.1% of portfolio'
-        }.get(asset_type, '1% of portfolio')
-        
-        # Build full prompt with v2.2 enhancements
-        prompt = f"""You are an expert cryptocurrency trading analyst with 10+ years of experience in technical analysis and market psychology.
+        # Build PUMP-FOCUSED prompt (v4.0 — no traditional indicators)
+        prompt = f"""You are a specialized PUMP DETECTION AI. Your job is to VALIDATE the bot's pump signals using on-chain data, sentiment analysis, and news.
 
-═══════════════════════════════════════════════════════════════════════════════
-🎯 SECTION 0: ASSET TYPE DETECTION & ANALYSIS FOCUS (v2.2)
-═══════════════════════════════════════════════════════════════════════════════
+DO NOT analyze RSI, MFI, MACD, Stochastic, Volume Profile, FVG, Order Blocks, or SMC — the bot already calculates these internally.
+Focus ONLY on: Pump validation, whale tracking, funding rates, news, and social sentiment.
 
-DETECTED ASSET TYPE: {asset_type}
-
-Asset Classification (v2.2):
-- BTC: Bitcoin - Macro-driven, institutional flows, dominance critical
-- ETH: Ethereum - Smart contract ecosystem, institutional interest
-- LARGE_CAP_ALT (>$10B): Lower risk, stronger fundamentals, institutional access
-- MID_CAP_ALT ($1B-$10B): Moderate risk, sector potential, growth opportunity
-- SMALL_CAP_ALT ($100M-$1B): High risk, high reward, technical analysis critical
-- MEME_COIN (<$100M): Extreme risk, community-driven, sentiment matters most
-
-ANALYSIS APPROACH FOR {asset_type}:
-- Risk Multiplier: {risk_multiplier}x (higher = more cautious)
-- Recommended Position Size: {position_sizing_guide}
-- Stop Loss Width: {"5-10% BTC dominance-aware" if asset_type == "BTC" else "Wider stops due to correlation risk" if asset_type != "BTC" else "Standard"}
-- Confidence Adjustment: {"Base on macro factors heavily" if asset_type == "BTC" else "Base on BTC correlation" if asset_type in ["ETH", "LARGE_CAP_ALT"] else "Base on sector momentum"}
-
-CRITICAL FOR {asset_type}:
-"""
-        
-        # Add asset-specific critical factors
-        if asset_type == 'BTC':
-            prompt += """1. BTC MACRO FACTORS (Weight: 40% of analysis):
-   - BTC dominance (trend, support/resistance levels, institutional thesis)
-   - ETF flows (>$500M daily = strong institutional signal)
-   - Whale accumulation/distribution (large transaction analysis)
-   - Miner pressure (difficulty adjustments, outflows from mining pools)
-   - Macro correlations (DXY, S&P500, Gold, Treasury yields)
-   - Fed policy and macro sentiment shifts
-   ONLY BTC can have dominance-driven analysis. Use this heavily for conviction.
-
-2. CONFLUENCE RULES FOR BTC:
-   - STRONG BUY: Price at support + Dominance rising + Positive macro + Institutional inflow
-   - WEAK BUY: Technical confluence alone without macro support = reduce confidence 30%
-   - SELL: Breaking macro support levels (dominance break, whale exit, macro headwind)
-   - WAIT: Macro uncertainty or dominance consolidation (sideways 50-60%)
-
-"""
-        elif asset_type in ['ETH', 'LARGE_CAP_ALT', 'MID_CAP_ALT']:
-            prompt += f"""1. ALTCOIN CORRELATION ANALYSIS (Weight: 35% of analysis):
-   - BTC correlation strength: How closely {symbol} follows BTC (0-100%)
-   - ETH correlation: Alternative smart contract ecosystem dependency
-   - Independent move probability: Can this move against BTC? (low on alts)
-   - Sector momentum: {asset_type} sector performance vs overall market
-   - Sector rotation risk: Moving from one sector to another?
-   - Project health score: Tokenomics, development, adoption
-   - Liquidity assessment: Can you enter/exit without slippage?
-   ALTCOINS HIGHLY DEPENDENT ON BTC - Use correlation heavily for conviction.
-
-2. CONFLUENCE RULES FOR {asset_type}:
-   - STRONG BUY: Technical setup + BTC positive + Sector leadership + Health good
-   - WEAK BUY: Technical alone without BTC support = reduce confidence 40%
-   - SELL: BTC weakness OR sector rotation OR health degradation
-   - WAIT: High BTC correlation + uncertain macro (price will follow BTC down)
-
-"""
-        else:
-            prompt += f"""1. SMALL CAP/MEME ANALYSIS (Weight: 30% of technical):
-   - Community sentiment and social metrics
-   - Chart technicals and momentum
-   - Volatility and pump-and-dump risk assessment
-   - Liquidity and slippage concerns
-   - Project fundamentals (if any) or pure sentiment play
-   SMALL CAPS ARE HIGHLY RISKY - Only trade with tight stops and small position sizes.
-
-2. CONFLUENCE RULES FOR {asset_type}:
-   - STRONG BUY: Perfect technical + Extreme momentum + Good liquidity
-   - WEAK BUY: Technical alone = apply 50% confidence penalty
-   - SELL: Loss of momentum or liquidity drying up
-   - WAIT: Whenever uncertain (risk/reward not favorable)
-
-"""
-        
-        prompt += f"""
-TRADING STYLE: {trading_style.upper()}
-- If scalping: Focus on 1m-5m-15m timeframes, quick entries/exits, tight stop losses
-- If swing: Focus on 1h-4h-1D timeframes, position holding 2-7 days, wider stop losses
-
-{historical_context}
-
-ANALYZE THIS CRYPTOCURRENCY:
+═══════════════════════════════════════════
+🎯 ASSET CLASSIFICATION
+═══════════════════════════════════════════
 
 SYMBOL: {symbol}
-DETECTED TYPE: {asset_type}
+TYPE: {asset_type}
 CURRENT PRICE: ${market['price']:,.2f}
+24H CHANGE: {market['price_change_24h']:+.2f}%
+24H HIGH: ${market['high_24h']:,.2f} | LOW: ${market['low_24h']:,.2f}
+24H VOLUME: ${volume['current']:,.0f} USDT
+24H TRADES: {volume['trades']:,}
 
 ═══════════════════════════════════════════
-📊 TECHNICAL INDICATORS (Multi-Timeframe)
+🚀 BOT'S PUMP DETECTION RESULT (VALIDATE THIS)
 ═══════════════════════════════════════════
 
-RSI + MFI Analysis:
-{rsi_mfi_text}
-
-
-Stochastic + RSI Analysis:
-{stoch_text}
-
-═══════════════════════════════════════════
-🚀 PUMP SIGNAL ANALYSIS
-═══════════════════════════════════════════
 {pump_text}
 
-═══════════════════════════════════════════
-🏛️ INSTITUTIONAL INDICATORS (JSON STRUCTURED)
-═══════════════════════════════════════════
-
-CRITICAL: Analyze this institutional data systematically. This represents smart money footprints.
-
-```json
-{json.dumps(institutional_json, indent=2, default=str)}
-```
-
-KEY INTERPRETATIONS:
-- volume_profile: POC=highest volume price, VAH/VAL=value area boundaries, position=current price location
-- fair_value_gaps: Unfilled gaps act as magnets (price tends to fill them), high fill_rate=reliable zones
-- order_blocks: Institutional accumulation/distribution zones, ACTIVE blocks=strong S/R
-- support_resistance: High volume_ratio (>2x)=very strong zones, delta_volume=buy/sell pressure
-- smart_money_concepts: BOS=continuation, CHoCH=reversal, EQH/EQL=accumulation zones
+YOUR TASK: Use Google Search to VALIDATE or REFUTE the bot's detection.
+VALIDATION CHECKLIST:
+1. Does on-chain data support the volume spike? (Real buying vs wash trading?)
+2. Are whales actually accumulating this coin? (Arkham/Whale Alert data)
+3. Is there a news catalyst driving the move? (Partnership, listing, upgrade?)
+4. Is the funding rate supporting the direction? (Short squeeze potential?)
+5. What is the dump risk? (Token unlock, whale distribution, exchange inflow?)
 
 ═══════════════════════════════════════════
-💧 VOLUME ANALYSIS
+🔗 ON-CHAIN & DERIVATIVES DATA (SEARCH FOR THIS)
 ═══════════════════════════════════════════
-  24h Volume: ${volume['current']:,.0f} USDT
-  24h Trades: {volume['trades']:,}
-  Base Volume: {volume['base_volume']:,.4f}
+
+Use Google Search to find real-time data:
+
+A. WHALE & SMART MONEY:
+   Search: "{symbol} whale alert large transfer today", "{symbol} exchange inflow outflow today"
+   - Large transfers TO exchanges = SELL pressure (dump risk)
+   - Large transfers FROM exchanges = Accumulation (bullish)
+
+B. FUNDING RATE & DERIVATIVES:
+   Search: "{symbol} funding rate current", "{symbol} open interest trend", "Coinglass {symbol}"
+   - Funding > +0.05%: Longs overheated → long squeeze risk
+   - Funding < -0.03%: Shorts dominant → SHORT SQUEEZE potential (bullish)
+   - OI rising + price rising: Trend continuation
+   - OI falling + price rising: Short covering rally (may fade)
+
+C. EXCHANGE FLOW:
+   Search: "{symbol} exchange reserve trend", "Glassnode {symbol} exchange flow"
+   - Net outflows > $1M: Accumulation (coins leaving exchanges)
+   - Net inflows > $1M: Distribution (coins entering exchanges for sale)
+
+D. TOKEN SUPPLY EVENTS:
+   Search: "{symbol} token unlock schedule 2026", "{symbol} tokenomics vesting"
+   - Large unlock within 30 days = sell pressure risk
+   - Team/VC tokens vesting = distribution risk
 
 ═══════════════════════════════════════════
-📈 HISTORICAL COMPARISON (vs Last Week)
+📰 NEWS & SENTIMENT (SEARCH FOR THIS)
 ═══════════════════════════════════════════
+
+A. BREAKING NEWS:
+   Search: "{symbol} crypto news today", "{symbol} partnership announcement", "{symbol} exchange listing"
+   Impact: CEX listing (+20%), Partnership (+10-15%), Hack/exploit (-30%), Delisting (SELL)
+
+B. SOCIAL MEDIA HYPE:
+   Search: "{symbol} crypto Twitter trending", "{symbol} Reddit discussion today"
+   - EXTREME HYPE + pump signal = likely near local top
+   - LOW HYPE + pump signal = stealth accumulation (BULLISH)
+
+C. FEAR & GREED INDEX:
+   Search: "crypto fear and greed index today"
+   - <20 (Extreme Fear): CONTRARIAN BUY
+   - >80 (Extreme Greed): CONTRARIAN SELL
+
+D. BTC CONTEXT:
+   Search: "Bitcoin price today", "Bitcoin ETF net flow today"
+   - BTC dropping > 3%: ALL alts at risk → reduce confidence 20-30%
+
+═══════════════════════════════════════════
+⏱️ PUMP TIMING & RISK
+═══════════════════════════════════════════
+
+Assess which phase the pump is in:
+1. PRE-PUMP: Low hype + whale accumulation + price flat → BEST ENTRY (24-72h to breakout)
+2. EARLY PUMP: Volume spike + breakout → GOOD ENTRY (6-24h continuation)
+3. MID PUMP: Extreme hype + massive volume → RISKY ENTRY (2-12h, dump risk HIGH)
+4. LATE PUMP: Whale selling into FOMO → DO NOT ENTER (dump imminent)
+
+DUMP RISK FACTORS:
+- Token unlock < 7 days: +30 risk
+- Whale transferring to exchange: +25 risk
+- Extreme social hype: +20 risk
+- Funding rate > +0.1%: +15 risk
+- Low liquidity (vol < $5M): +10 risk
+- Total > 50: HIGH DUMP RISK
+
+═══════════════════════════════════════════
+📋 HISTORICAL COMPARISON
+═══════════════════════════════════════════
+
 {hist_text}
-{hist_klines_text}
-═══════════════════════════════════════════
-📉 24H MARKET DATA
-═══════════════════════════════════════════
-  Price Change: {market['price_change_24h']:+.2f}%
-  24h High: ${market['high_24h']:,.2f}
-  24h Low: ${market['low_24h']:,.2f}
-  24h Volume: ${market['volume_24h']:,.0f} USDT
-
-═══════════════════════════════════════════════════════════════════════════════
-🔄 SECTION 0.5: MULTI-SOURCE ON-CHAIN DATA INTEGRATION (v3.3 - REAL-TIME)
-═══════════════════════════════════════════════════════════════════════════════
-
-**IMPORTANT FOR AI:** You have web browsing capability. Fetch real-time on-chain data from these public URLs:
-
-**Glassnode Institutional Flows:** https://studio.glassnode.com/metrics
-- Browse for Exchange Flow Multiple, Long-Term Holder Supply, Miner Reserve
-- Example: Rising miner reserves = capitulation bottom signal
-- Integration: Cross-verify with Arkham whale flows for BTC direction
-
-**CoinGlass Derivatives Data:** https://www.coinglass.com/
-- Browse perpetual funding rates, liquidation heatmaps, open interest
-- Example: BTC Funding Rate >0.1% = contrarian short opportunity
-- Integration: Combine with DeFiLlama TVL for hedging signals
-
-**DeFiLlama TVL & Liquidity:** https://defillama.com/
-- Browse TVL across chains, protocol revenue, yield trends
-- Example: Ethereum TVL $50B+, Solana yield spikes indicate sector rotation
-- Integration: Monitor cross-chain bridges for liquidity shifts
-
-**Arkham Entity Explorer:** https://platform.arkhamintelligence.com/explorer
-- Track institutional wallet flows and entity clustering
-- Example: Binance Hot Wallet >10k ETH transfers signal exchange inflows
-- Integration: High concentration (>30% top 10) increases dump risk
-
-**Token Terminal Protocol Revenue:** https://tokenterminal.com/terminal
-- Browse protocol revenue, P/S ratios, valuation multiples
-- Example: Uniswap P/S <5x with rising revenue = long opportunity
-- Integration: Compare with Messari tokenomics for valuation models
-
-**Nansen Smart Money Analysis:** https://www.nansen.ai/research
-- Follow smart money wallets and DEX trader performance
-- Example: Smart DEX traders with >90% win rate = follow their entries
-- Integration: Highest weight for entry confirmation signals
-
-**Messari Research & Tokenomics:** https://messari.io/research
-- Read free research reports on fundamentals and market structure
-- Example: DePIN protocol incentive burns indicate utility strength
-- Integration: Combine with DeFiLlama TVL for sector rotation alpha
-
-**DATA INTEGRATION PRIORITIES:**
-1. Cross-verify signals across MINIMUM 3 independent on-chain sources
-2. Weight institutional sources 40% higher (Glassnode, Arkham, Token Terminal)
-3. Prioritize real-time DEX data over CEX for altcoins (less manipulation)
-4. Use Glassnode flows as PRIMARY BTC direction indicator
-5. Apply mean-variance optimization to correlation analysis
-6. Factor time decay: older signals weighted 30% lower than current
-
-═══════════════════════════════════════════════════════════════════════════════
-🧭 SECTION 1.5: INSTITUTIONAL FUND TRADING TACTICS (v3.3)
-═══════════════════════════════════════════════════════════════════════════════
-
-**ASSET ALLOCATION STRATEGY (Risk Parity Model):**
-- Macro Regime Detection: Fed policy + BTC dominance + institutional flows + volatility
-- Risk Parity Allocation: Position sizing based on volatility-adjusted correlations
-- Cross-DEX Liquidity Mining: Capture alpha from concentrated liquidity in high-fee tiers
-- Derivatives Hedging: Use CoinGlass funding rates to delta-neutral hedge spot exposure
-- Yield Curve Arbitrage: Exploit basis differences between spot/futures/perpetuals
-
-**ENTRY/EXIT METHODOLOGY (Smart Money Framework):**
-- Track >$10M institutional orders via Arkham for confirmation
-- Follow labeled smart money wallets with >90% win rate history (Nansen)
-- Enter when price approaches high-liquidity DEX zones (Volume Profile analysis)
-- Use CoinGlass funding extremes (>±$0.1%) for contrarian signals
-- Use Glassnode miner capitulation for BTC bottom fishing
-
-**RISK MANAGEMENT (Fund Grade Standards):**
-- Max Drawdown: 2% per trade, 8% per portfolio
-- Correlation Risk: Reduce position 30% when BTC correlation >85%
-- Liquidity Risk: Avoid positions >10% of daily DEX volume
-- Black Swan Protection: Maintain 5% stablecoin buffer during high volatility
-- Stress Test: Simulate -30% scenarios before entry
-- Kelly Criterion: Position Size = (win_prob × win_loss_ratio - loss_prob) / win_loss_ratio
-
-**PORTFOLIO CONSTRUCTION (Institutional Framework):**
-- Core Holdings (60%): BTC + ETH with custody and yield
-- Satellite (25%): High-conviction alts with fundamentals
-- Alpha Generation (10%): Active trading from technical + on-chain signals
-- Risk Mitigation (5%): Options protection, stablecoin yield, cash
-
-**PERFORMANCE TARGETS:**
-- Sharpe Ratio: >1.5 (risk-adjusted returns)
-- Win Rate: ≥65% for systematic strategies
-- Profit Factor: >2.0 (gross profits / gross losses)
-- Max Drawdown: <25% annually
-- Calmar Ratio: >1.0 (annual return / max drawdown)
-
-═══════════════════════════════════════════════════════════════════════════════
-😨 SECTION 1.6: MULTI-SOURCE SENTIMENT & MEDIA DATA INTEGRATION (v3.3 - REAL-TIME)
-═══════════════════════════════════════════════════════════════════════════════
-
-**IMPORTANT FOR AI:** Fetch real-time sentiment from these public URLs:
-
-**Social Media Sentiment (Browse & Analyze):**
-- X/Twitter: https://x.com/ - Search "{symbol} price" or "{symbol} news" for FOMO detection
-- Telegram: https://web.telegram.org/ - Monitor {symbol} channels for retail panic
-- Reddit: https://www.reddit.com/ - Check r/cryptocurrency and {symbol}-specific subreddits
-- TradingView Ideas: https://www.tradingview.com/ - Check if >70% votes bullish
-
-**News Platforms (Latest Headlines):**
-- CoinDesk: https://www.coindesk.com/ - Institutional buy-in signals (ETF approvals)
-- Cointelegraph: https://cointelegraph.com/ - Regulatory and project news
-- Bloomberg Crypto: https://www.bloomberg.com/crypto - Macro and institution interest
-- Reuters Markets: https://www.reuters.com/markets/cryptocurrencies/ - Official announcements
-- Yahoo Finance Crypto: https://finance.yahoo.com/cryptocurrencies/ - Sentiment shifts
-
-**Search Trends (Retail Interest Indicator):**
-- Google Trends: https://trends.google.com/ - Search "{symbol}" for trend spikes
-- CryptoCompare: https://www.cryptocompare.com/ - Search volume vs price correlation
-- >200% WoW spike = Retail entry phase (caution for dump)
-
-**Economic Calendar & Macro Events:**
-- ForexFactory: https://www.forexfactory.com/calendar - Fed decisions (HIGH impact = volatility)
-- Investing.com: https://www.investing.com/economic-calendar/ - Macro events impact
-- Correlate Fed rate decisions with BTC direction
-
-**Whale & Liquidation Alerts:**
-- Whale Alert Twitter: https://x.com/whale_alert - ">10,000 BTC to exchange" signals
-- CoinGlass Heatmap: https://www.coinglass.com/ - Liquidation cascades predict volatility
-- Large transfers = distribution risk (price likely down next)
-
-**Options & Derivatives Sentiment:**
-- Deribit Options: https://www.deribit.com/ - Put/call ratios (>1.5 = bearish)
-- OKX Options: https://www.okx.com/ - Volatility skew analysis
-- High puts = fear = contrarian buy setup
-
-**Funding Rate Sentiment (Leverage Positions):**
-- Binance Perpetuals: https://www.binance.com/ - Browse funding rates
-- OKX Perpetuals: https://www.okx.com/ - Negative funding = squeeze potential
-- Bybit Perpetuals: https://www.bybit.com/ - Longs overly leveraged = risk
-
-**Fear & Greed Index (Market Sentiment Gauge):**
-- Alternative.me: https://alternative.me/crypto/fear-and-greed-index/
-- **CONTRARIAN SIGNAL:** Index 0-20 (Extreme Fear) = Buy opportunity
-- Index 80-100 (Extreme Greed) = Sell/Take profits
-- Current usage: If index is 11 (Extreme Fear), boost buy confidence by 15-20%
-
-**Institutional Filings (Long-term Conviction):**
-- SEC EDGAR: https://www.sec.gov/edgar.shtml - Search "Bitcoin ETF" or {symbol} ETF
-- Form 13F filings = Quarterly institutional holdings changes
-- ETF inflows >$500M = Strong institutional support
-
-**SENTIMENT WEIGHTING FRAMEWORK:**
-1. Institutional News (Bloomberg, Reuters): 35% weight - High reliability
-2. Social Media (X/Telegram): 25% weight - Retail flow indicator
-3. On-Chain Data (Glassnode, Arkham): 25% weight - Actual money movement
-4. Fear & Greed Index: 10% weight - Market extremes for contrarian plays
-5. Search Trends: 5% weight - Retail FOMO detection
-
-**SENTIMENT INTEGRATION RULES:**
-- If Fear & Greed <20 AND technical bullish = STRONG BUY (contrarian + technicals)
-- If Fear & Greed >80 AND technical bearish = STRONG SELL (greed + technicals)
-- If whale alert ">10k BTC to exchange" + price rallying = DISTRIBUTION RISK (lower confidence)
-- If smart money wallet accumulating + price consolidating = STRONG BUY setup
-- If news +ve but Fear & Greed extreme fear = EXTREME BULL move coming
 
 ═══════════════════════════════════════════
-🎯 YOUR TASK (v3.3 ENHANCED)
+🧠 HISTORICAL LEARNING
 ═══════════════════════════════════════════
-
-═══════════════════════════════════════════════════════════════════════════════
-⚖️ SECTION 12: DYNAMIC RISK ADJUSTMENTS (v2.2)
-═══════════════════════════════════════════════════════════════════════════════
-
-FOR {asset_type} - Apply these risk multipliers to your analysis:
-
-**Position Sizing Formula:**
-Base Position = 2% of portfolio
-Risk Multiplier = {risk_multiplier}x (asset type risk)
-Liquidity Factor = 1.0 if volume > $10M, else 0.5-0.7x (reduce position if illiquid)
-BTC Correlation Factor = 0.8-1.0x for alts (reduce if highly correlated to BTC weakness)
-
-FINAL_POSITION = Base Position × (1/Risk_Multiplier) × Liquidity_Factor × Correlation_Factor
-CAPPED AT: {position_sizing_guide}
-
-**Asset Type Risk Profiles:**
-- BTC (1.0x): 3-5% position, 5-10% stop, long-term conviction possible
-- ETH (1.2x): 2-3% position, 8-12% stop, sector leadership matters
-- LARGE_CAP_ALT (1.5x): 1.5-2% position, 10-15% stop, BTC correlation important
-- MID_CAP_ALT (2.0x): 1-1.5% position, 12-18% stop, correlation risk high
-- SMALL_CAP_ALT (2.5x): 0.5-1% position, 15-25% stop, tight technical stops critical
-- MEME_COIN (3.0x): 0.05-0.1% position, 20-30% stop, use only with extreme caution
-
-**Market Regime Adjustments:**
-- ALTSEASON (alts outperforming BTC): Increase small cap position 20-30%
-- BTC_DOMINANT (alts underperforming): Reduce small cap position 30-50%, increase BTC
-- RISK_ON (high market confidence): Normal sizing
-- RISK_OFF (uncertainty/fear): Reduce all positions 30-50%, increase stop widths 20-30%
-
-**Critical Risk Rules:**
-1. If volume < $10M: Reduce position by 50-70% (liquidity too low for exit)
-2. If BTC correlation > 90% for altcoin: Add dependency warning (limited independent move)
-3. If volatility is 2x normal: Widen stops by 20-30% (larger average swings)
-4. If market regime uncertain: Increase confidence requirement from 65 to 75%
-5. Use WAIT instead of HOLD if conditions unclear (preserve capital)
-
-APPLY THESE RULES TO YOUR RECOMMENDATION AND ADJUST ENTRY/TP/SL ACCORDINGLY.
-
-═══════════════════════════════════════════════════════════════════════════════
-🎯 ENHANCED JSON FORMAT (v3.3 - REAL-TIME + SENTIMENT)
-═══════════════════════════════════════════════════════════════════════════════
-
-Provide a comprehensive trading analysis in JSON format with REAL-TIME timestamp:
-
-{{
-  "real_time_timestamp": "ISO 8601 timestamp when this analysis was generated (e.g., '2025-11-20T12:00:00Z')",
-  "asset_type": "{asset_type}",
-  "recommendation": "BUY" | "SELL" | "HOLD" | "WAIT",
-  "confidence": 0-100,
-  "trading_style": "{trading_style}",
-  "entry_point": price in USD,
-  "stop_loss": price in USD,
-  "take_profit": [target1, target2, target3],
-  "expected_holding_period": "X hours/days",
-  "risk_level": "LOW" | "MEDIUM" | "HIGH",
-  "reasoning_vietnamese": "Chi tiết phân tích bằng tiếng Việt (300-500 từ)",
-  
-  "sector_analysis": {{
-    "sector": "{asset_type} sector name",
-    "sector_momentum": "STRONG_UP" | "UP" | "NEUTRAL" | "DOWN" | "STRONG_DOWN",
-    "rotation_risk": "None" | "Minor" | "Moderate" | "High",
-    "sector_leadership": "This coin is leading sector" or "Lagging sector"
-  }},
-  
-  "correlation_analysis": {{
-    "btc_correlation": 0-100,
-    "eth_correlation": 0-100,
-    "independent_move_probability": 0-100
-  }},
-  
-  "fundamental_analysis": {{
-    "health_score": 0-100,
-    "tokenomics": "Good" | "Fair" | "Poor",
-    "centralization_risk": "Low" | "Medium" | "High",
-    "ecosystem_strength": "Strong" | "Moderate" | "Weak"
-  }},
-  
-  "position_sizing_recommendation": {{
-    "position_size_percent": "X% of portfolio",
-    "risk_per_trade": "X%",
-    "recommended_leverage": "1x (no leverage)" | "2x" | "3x+",
-    "liquidity_notes": "Good liquidity" | "Moderate" | "Low - reduce position"
-  }},
-  
-  "macro_context": {{"""
-        
-        if asset_type == "BTC":
-            prompt += """
-    "btc_dominance": "RISING" | "FALLING" | "STABLE",
-    "dominance_trend": "Bullish" | "Bearish" | "Neutral",
-    "institutional_flows": "Inflows $XXM" | "Outflows $XXM" | "Neutral",
-    "etf_status": "Strong inflows" | "Neutral" | "Outflows",
-    "whale_activity": "Accumulation" | "Distribution" | "Neutral",
-    "miner_pressure": "Selling pressure" | "Accumulating" | "Neutral",
-    "macro_correlation": "Positive (DXY down, S&P up)" | "Neutral" | "Negative"
-  }}"""
-        else:
-            prompt += """
-    "sector_rotation_status": "Sector in favor" | "Rotating out" | "Out of favor",
-    "btc_dependency": "High (follow BTC)" | "Moderate" | "Low (independent)",
-    "project_catalysts": "Near-term catalyst details" | "None expected",
-    "liquidity_assessment": "Good (easy entry/exit)" | "Moderate" | "Poor (wide spreads)",
-    "market_cap_impact": "Supported by market cap" | "Fair value" | "Overvalued"
-  }}"""
-        
-        prompt += f"""
-  ,
-  "key_points": ["Điểm chính 1 (bằng tiếng Việt)", "Điểm chính 2 (bằng tiếng Việt)", ...],
-  "conflicting_signals": ["Tín hiệu mâu thuẫn 1 (tiếng Việt)", "Tín hiệu 2", ...] or [],
-  "warnings": ["Cảnh báo 1 (tiếng Việt)", "Cảnh báo 2", ...] or [],
-  "market_sentiment": "BULLISH" | "BEARISH" | "NEUTRAL",
-  "technical_score": 0-100,
-  "fundamental_score": 0-100,
-  "historical_analysis": {{
-    "h1_context": {{
-      "rsi_interpretation": "RSI avg vs current, oversold/overbought zones",
-      "volume_trend": "Increasing/Decreasing và ý nghĩa",
-      "price_position": "Vị trí trong range và trend 7 ngày",
-      "institutional_insights": "Phân tích Volume Profile, FVG, OB, SMC trên khung 1H (7 ngày)"
-    }},
-    "h4_context": {{
-      "rsi_interpretation": "RSI context 30 ngày",
-      "volume_trend": "Volume pattern analysis",
-      "price_position": "Vị trí trong range và xu hướng",
-      "institutional_insights": "Phân tích Volume Profile, FVG, OB, SMC trên khung 4H (30 ngày)"
-    }},
-    "d1_context": {{
-      "rsi_mfi_correlation": "RSI & MFI alignment analysis",
-      "long_term_trend": "Xu hướng 90 ngày và momentum",
-      "volatility_assessment": "Đánh giá độ biến động",
-      "institutional_insights": "Phân tích Volume Profile, FVG, OB, SMC trên khung 1D (90 ngày)"
-    }}
-  }},
-  
-  "historical_learning": {{
-    "total_past_analyses": 0-100,
-    "win_rate_percent": 0-100,
-    "base_confidence": 0-100,
-    "historical_adjustment": -20 to +15,
-    "final_confidence_calculation": "Explain: base X + adjustment Y = final Z",
-    "similar_past_analysis": {{
-      "found": true | false,
-      "analysis_number": "#X" or null,
-      "analysis_date": "YYYY-MM-DD" or null,
-      "similarity_factors": ["RSI range match", "MFI range match", "VP position match", ...] or [],
-      "past_outcome": "WIN" | "LOSS" | "PENDING" | null,
-      "past_profit_percent": -100 to +100 or null,
-      "lessons_learned": "What went right/wrong in that analysis" or null,
-      "adjustments_made": "How current recommendation differs based on past outcome" or null
-    }},
-    "pattern_match": {{
-      "matches_winning_pattern": true | false,
-      "matches_losing_pattern": true | false,
-      "winning_pattern_details": "RSI X-Y, MFI A-B, VP position Z" or null,
-      "losing_pattern_details": "RSI X-Y, MFI A-B, VP position Z" or null,
-      "pattern_confidence_impact": "Increase/Decrease by X points" or "No impact"
-    }},
-    "entry_stop_learning": {{
-      "past_sl_too_tight": true | false,
-      "past_sl_too_wide": true | false,
-      "past_tp_not_reached": true | false,
-      "past_entry_too_early": true | false,
-      "current_adjustments": "Specific changes made to entry/SL/TP based on past" or "No adjustments needed"
-    }},
-    "recommendation_rationale": "Brief explanation of how historical data influenced final recommendation (2-3 sentences)"
-  }},
-  
-  "sentiment_analysis": {{
-    "fear_greed_index": {{
-      "current_value": 0-100,
-      "current_status": "Extreme Fear" | "Fear" | "Neutral" | "Greed" | "Extreme Greed",
-      "contrarian_signal": "Buy opportunity" | "Normal" | "Sell opportunity",
-      "confidence_impact": "Increase confidence by X%" or "Decrease confidence by X%"
-    }},
-    "social_media_sentiment": {{
-      "x_twitter_sentiment": "Very Positive" | "Positive" | "Neutral" | "Negative" | "Very Negative",
-      "telegram_sentiment": "Very Positive" | "Positive" | "Neutral" | "Negative" | "Very Negative",
-      "reddit_sentiment": "Very Positive" | "Positive" | "Neutral" | "Negative" | "Very Negative",
-      "overall_social_score": 0-100,
-      "retail_fomo_level": "Extreme" | "High" | "Moderate" | "Low" | "None"
-    }},
-    "news_sentiment": {{
-      "latest_news_source": "CoinDesk" | "Cointelegraph" | "Bloomberg" | "Reuters" | "Other",
-      "headline": "Latest significant headline",
-      "sentiment": "Very Positive" | "Positive" | "Neutral" | "Negative" | "Very Negative",
-      "institutional_impact": "Strong positive" | "Positive" | "Neutral" | "Negative" | "Strong negative",
-      "news_relevance": "Direct to {symbol}" | "Sector impact" | "Market-wide impact"
-    }},
-    "whale_activity_sentiment": {{
-      "recent_whale_alerts": "Large transfers to exchange" | "Accumulation" | "None significant",
-      "distribution_risk": "High" | "Moderate" | "Low",
-      "sentiment_impact": "Bearish" | "Neutral" | "Bullish"
-    }},
-    "economic_calendar_impact": {{
-      "upcoming_event": "Fed rate decision" | "CPI release" | "Other macro event" | "None",
-      "event_impact_level": "HIGH" | "MEDIUM" | "LOW",
-      "expected_direction": "Bullish for crypto" | "Bearish for crypto" | "Neutral"
-    }},
-    "sentiment_divergence": {{
-      "retail_vs_institutional": "Retail bullish, institutions bearish" | "Aligned" | "Retail bearish, institutions bullish",
-      "divergence_strength": "Extreme" | "Significant" | "Moderate" | "None",
-      "risk_implication": "High risk of reversal" | "Mixed signals" | "Aligned direction"
-    }},
-    "overall_sentiment_score": 0-100,
-    "sentiment_summary": "One sentence summary of market sentiment for {symbol} (tiếng Việt)"
-  }},
-  
-  "on_chain_analysis": {{
-    "glassnode_flows": {{
-      "exchange_flow_status": "Net inflows >$100M" | "Neutral flows" | "Net outflows >$100M",
-      "interpretation": "Accumulation" | "Neutral" | "Distribution"
-    }},
-    "coinglass_derivatives": {{
-      "funding_rate_status": "Positive >0.1%" | "Positive <0.1%" | "Neutral" | "Negative",
-      "liquidation_risk": "High" | "Moderate" | "Low",
-      "open_interest_trend": "Increasing" | "Stable" | "Decreasing"
-    }},
-    "defillama_tvl": {{
-      "tvl_trend": "Increasing >10% MoM" | "Stable" | "Decreasing >10% MoM",
-      "protocol_health": "Strong" | "Stable" | "Concerning",
-      "cross_chain_flows": "Inflows" | "Neutral" | "Outflows"
-    }}
-  }},
-  
-  "data_sources": {{
-    "real_time_data_timestamp": "ISO 8601 timestamp of data fetch",
-    "on_chain_sources": [
-      {{"url": "https://studio.glassnode.com/metrics", "fetched_at": "ISO timestamp", "data": "Exchange flows, LTH supply"}},
-      {{"url": "https://www.coinglass.com/", "fetched_at": "ISO timestamp", "data": "Funding rates, liquidations"}},
-      {{"url": "https://defillama.com/", "fetched_at": "ISO timestamp", "data": "TVL, cross-chain flows"}}
-    ],
-    "sentiment_sources": [
-      {{"url": "https://alternative.me/crypto/fear-and-greed-index/", "fetched_at": "ISO timestamp", "value": "Current Fear & Greed value"}},
-      {{"url": "https://x.com/whale_alert", "fetched_at": "ISO timestamp", "data": "Latest whale transfers"}},
-      {{"url": "https://www.coindesk.com/", "fetched_at": "ISO timestamp", "headline": "Latest news"}}
-    ],
-    "fetched_metrics": [
-      "BTC price from news: ~$91,500",
-      "Fear & Greed Index: 11 (Extreme Fear)",
-      "Glassnode flows: [specific data]",
-      "Whale alerts: [specific transfers]"
-    ]
-  }}
-}}
-
-IMPORTANT GUIDELINES - EXPANDED (v3.3):
-
-1. **REAL-TIME DATA REQUIREMENT:**
-   - Must include real_time_timestamp in ISO 8601 format
-   - Must include data_sources with fetched_at timestamps for each source
-   - Verify data is current (within 24h) or note any delays
-   - If unable to fetch current data, indicate "data age >24h" in warnings
-
-2. **SENTIMENT ANALYSIS INTEGRATION (NEW - v3.3):**
-   - Fill fear_greed_index with current value from https://alternative.me/crypto/fear-and-greed-index/
-   - If Fear & Greed <20 (Extreme Fear): Apply +15 confidence boost for BUY signals
-   - If Fear & Greed >80 (Extreme Greed): Apply -15 confidence reduction for SELL signals
-   - Cross-verify sentiment divergence: Retail bullish but institutions selling = CAUTION
-   - Whale alerts showing >$1B to exchange = distribution risk, reduce confidence
-
-3. **ON-CHAIN DATA INTEGRATION (v3.3):**
-   - Browse Glassnode for latest exchange flows (indicator of institutional direction)
-   - Check CoinGlass funding rates: >0.1% = longs overly leveraged, contrarian short
-   - Monitor DeFiLlama TVL changes: >10% MoM growth = sector strength
-   - Weight on-chain data 25% in final confidence calculation
-
-4. **ASSET TYPE ANALYSIS:**
-   - {asset_type} requires specific focus areas (see Section 0)
-   - Apply risk multiplier {risk_multiplier}x to position sizing
-
-   - Adjust confidence penalties based on asset type (see Dynamic Risk Rules)
-   - Include macro_context section in JSON (conditional on asset type)
-
-2. **CRITICAL: ALL TEXT FIELDS MUST BE IN VIETNAMESE**
-   - reasoning_vietnamese: MUST be 100% Vietnamese (300-500 words)
-   - key_points: MUST be Vietnamese (e.g., "RSI quá bán cho thấy...", "Khối lượng giảm đáng kể...")
-   - conflicting_signals: MUST be Vietnamese (e.g., "Tín hiệu RSI tăng nhưng MFI giảm...")
-   - warnings: MUST be Vietnamese (e.g., "Cảnh báo: Khối lượng thấp...")
-   - historical_analysis fields (rsi_interpretation, volume_trend, etc.): MUST be Vietnamese
-   - historical_learning.recommendation_rationale: MUST be Vietnamese
-   - DO NOT use English for any text content visible to users
-
-3. **Analyze ALL technical indicators systematically:**
-   - RSI+MFI consensus and individual timeframe signals
-   - Stochastic+RSI momentum across timeframes
-   - Volume patterns and 24h trading activity
-   - Pump detection signals (if >=80%, consider high risk/reward)
-   - Previous candle patterns on H4 and D1 (wick analysis, body size, bullish/bearish)
-   - **HISTORICAL DATA ANALYSIS (CRITICAL):** Xem section "DỮ LIỆU LỊCH SỬ MỞ RỘNG" bên trên
-
-4. **Historical Data Analysis (REQUIRED - Fill historical_analysis in JSON):**
-   - **1H Context (7 days):** Compare current RSI vs average, volume trend, price position
-   - **4H Context (30 days):** RSI context, volume pattern, price positioning
-   - **1D Context (90 days):** RSI & MFI correlation, long-term trend, volatility
-
-5. **Historical Learning Analysis (NEW - REQUIRED - Fill historical_learning in JSON):**
-   - **MANDATORY FIELD** - Must be included in every response with all sub-fields filled
-   - Based on PREVIOUS ANALYSES DETAILS section above (Analysis #1, #2, #3, etc.):
-     * total_past_analyses: Count from statistics
-     * win_rate_percent: From statistics section
-     * base_confidence: Initial confidence before historical adjustment
-     * historical_adjustment: Calculate (-20 to +15) based on win rate + similar analysis + patterns
-     * final_confidence_calculation: Show clear math, e.g., "Base 68 + WinRate +12 + Similar +5 = 85"
-   - **similar_past_analysis**:
-     * Search Analysis #1, #2, #3, etc. for similar RSI/MFI/VP conditions
-     * If found: Set found=true, fill analysis_number, date, outcome, profit_percent
-     * similarity_factors: ["RSI both 30-35", "MFI both 25-30", "Both DISCOUNT"]
-     * lessons_learned: What worked/failed in that past analysis
-     * adjustments_made: "Widened SL 2%→3% based on Analysis #3 getting stopped"
-   - **pattern_match**:
-     * matches_winning_pattern: true if current RSI/MFI/VP matches WINNING PATTERNS stats
-     * matches_losing_pattern: true if matches LOSING PATTERNS stats
-     * Fill winning_pattern_details or losing_pattern_details
-     * pattern_confidence_impact: "Increase by 12 points" or "Decrease by 15 points"
-   - **entry_stop_learning**:
-     * Review past analyses' SL/TP outcomes
-     * Mark true if past had issues (SL too tight, TP not reached, etc.)
-     * current_adjustments: "SL 2.5%→3.2% based on Analysis #2 stopped out too early"
-   - **recommendation_rationale**: 
-     * 2-3 sentences: HOW historical data influenced final recommendation
-     * MUST reference specific Analysis numbers if similar found
-     * Example: "Win rate 75% for this setup. Similar to Analysis #2 (WIN +5.3%), boosted confidence 68→85"
-
-6. **Candle Pattern Analysis (CRITICAL):**
-   - D1/H4 previous candles show institutional behavior
-   - Large wicks indicate rejection or absorption zones
-   - Bullish candles with small upper wicks = continuation potential
-
-7. **Dynamic Risk Application (CRITICAL - v2.2):**
-   - Calculate position size using formula above
-   - Apply liquidity penalties if volume < $10M
-   - Apply correlation penalties for altcoins dependent on BTC
-   - Adjust confidence if market regime is uncertain
-   - Use WAIT if risk/reward not favorable
-
-7. **CONJUNCTION RULES (Based on Asset Type):**
-   - For BTC: Confluence requires macro + technical (both critical)
-   - For ETH/LARGE_CAPS: Confluence requires BTC alignment + technical (both important)
-   - For SMALL_CAPS/MEMES: Confluence requires strong technicals + liquidity + low BTC risk
-
-8. **Institutional Indicators (CRITICAL - Weight 40% - JSON FORMAT ABOVE):**
-   
-   **READ THE JSON DATA CAREFULLY - Each field has specific meaning:**
-   
-   - **Volume Profile (volume_profile):**
-     * poc = Point of Control (highest volume price level)
-     * vah = Value Area High (top of 68% volume range)
-     * val = Value Area Low (bottom of 68% volume range)
-     * current_position values:
-       - "PREMIUM" (above VAH): Price is expensive, expect rejection or strong continuation
-       - "DISCOUNT" (below VAL): Price is cheap, expect bounce or deeper correction
-       - "AT_POC": At highest volume level, strong S/R, expect high volatility
-       - "VALUE_AREA": Inside fair value zone, balanced price, watch for breakout
-     * distance_to_poc_percent: Negative=below POC, Positive=above POC
-     * bias: Expected price direction based on position
-   
-   - **Fair Value Gaps (fair_value_gaps):**
-     * Gaps are imbalance zones where price moved too fast (no trading occurred)
-     * unfilled_bullish_gaps: Gaps below price = support magnets (price tends to fill them)
-     * unfilled_bearish_gaps: Gaps above price = resistance magnets
-     * fill_rate_percent: >70% = highly reliable zones that price will revisit
-     * nearest_bullish_fvg: If exists, strong support zone below current price
-     * nearest_bearish_fvg: If exists, strong resistance zone above current price
-     * distance_percent: Negative=below price, Positive=above price
-   
-   - **Order Blocks (order_blocks):**
-     * OBs = Last opposite candle before structure break (institutional footprints)
-     * active_swing_obs: Major institutional levels (50-period structure)
-     * active_internal_obs: Minor levels (5-period structure)
-     * mitigation_rate_percent: How often OBs get broken (lower=stronger zones)
-     * nearest_swing_ob.bias: "BULLISH"=support, "BEARISH"=resistance
-     * If bias=BULLISH and price near bottom: Strong support entry zone
-     * If bias=BEARISH and price near top: Strong resistance exit zone
-   
-   - **Support/Resistance (support_resistance):**
-     * High volume zones at pivot points (smart money accumulation)
-     * volume_ratio: >2x = very strong zone, >3x = extremely strong
-     * delta_volume: Positive=buying pressure, Negative=selling pressure
-     * nearest_support: If price approaching, watch for bounce
-     * nearest_resistance: If price approaching, watch for rejection
-     * distance_percent: How far from current price
-   
-   - **Smart Money Concepts (smart_money_concepts):**
-     * swing_trend: "BULLISH" or "BEARISH" or "NEUTRAL" (main trend)
-     * internal_trend: Short-term trend (can diverge from swing)
-     * structure_bias: Alignment between swing and internal
-       - "BULLISH_ALIGNED" or "BEARISH_ALIGNED" = Strong trend (high confidence)
-       - Mixed trends = Divergence (caution, possible reversal)
-     * BOS (Break of Structure): Trend continuation signals
-       - recent_bullish_bos > recent_bearish_bos = Strong uptrend
-       - recent_bearish_bos > recent_bullish_bos = Strong downtrend
-     * CHoCH (Change of Character): Trend reversal signals
-       - recent_bullish_choch: Potential bottom/reversal up
-       - recent_bearish_choch: Potential top/reversal down
-     * eqh_count, eql_count: Multiple touches at same level = accumulation zones
-     * trading_bias: AI-calculated bias with confidence level
-     * bias_reason: Why this bias was determined
-   
-   **INTEGRATION RULES:**
-   - If Volume Profile shows DISCOUNT + Bullish FVG nearby + Bullish OB active + SMC shows bullish CHoCH → STRONG BUY
-   - If Volume Profile shows PREMIUM + Bearish FVG nearby + Bearish OB active + SMC shows bearish CHoCH → STRONG SELL
-   - If current_price near POC + multiple active OBs → Expect high volatility breakout
-   - If price in VALUE_AREA but no clear FVGs/OBs → NEUTRAL/WAIT
-   - Weight SMC trading_bias heavily (it's pre-calculated with confluence)
-   - High volume_ratio S/R zones (>2x) are NON-NEGOTIABLE levels
-   
-5. Weight high-confidence pump signals (>=80%) heavily but note dump risk
-6. Be specific with entry/exit points based on current price and institutional zones
-7. Identify conflicting signals between different timeframes and indicator types explicitly
-8. Adjust recommendations based on trading style:
-   - **Scalping**: Tight stops (1-2%), quick 3-5% targets, 1-4 hour holding, focus on 4H FVG/OB
-   - **Swing**: Wider stops (3-5%), 10-20% targets, 3-7 day holding, focus on 1D Volume Profile/SMC
-9. Consider historical trends - strong week-over-week growth is bullish indicator
-10. Be conservative - if major conflicting signals exist, recommend WAIT
-
-═══════════════════════════════════════════════════════════════════════════════
-🧠 SECTION 13: HISTORICAL LEARNING & ADAPTIVE ANALYSIS (v2.2) - CRITICAL!
-═══════════════════════════════════════════════════════════════════════════════
 
 {historical_context}
 
-**🔥 MANDATORY INSTRUCTIONS - YOU MUST USE HISTORICAL DATA TO IMPROVE ANALYSIS:**
+═══════════════════════════════════════════
+📊 JSON RESPONSE FORMAT
+═══════════════════════════════════════════
 
-1. **Read Previous Analyses (NEW - CRITICAL):**
-   - Section "PREVIOUS ANALYSES DETAILS" above shows actual past recommendations
-   - Each analysis shows: Recommendation, Entry/SL/TP, Reasoning, and Outcome (WIN/LOSS/PENDING)
-   - Compare CURRENT market conditions with each past analysis:
-     * If current setup is similar to a WIN → Reference it: "Setup tương tự Analysis #2 đã thắng +5.3%"
-     * If current setup is similar to a LOSS → Warn: "⚠️ Cảnh báo: Điều kiện giống Analysis #4 đã thua -3.2%"
-   - Learn from reasoning: If past reasoning was wrong, explain what was missed
-   - Improve entry/SL/TP: If past levels were hit too early/late, adjust current recommendations
+Return analysis in this EXACT JSON format:
 
-2. **Win Rate-Based Confidence Adjustment:**
-   - If historical win rate > 60% for THIS specific setup → Increase confidence by +10 to +15 points
-   - If historical win rate < 40% for THIS specific setup → DECREASE confidence by -15 to -20 points OR use WAIT
-   - Example: Current RSI=35, historical data shows RSI 30-40 has 70% win rate → BOOST confidence significantly
+{{{{
+  "recommendation": "BUY" | "SELL" | "HOLD" | "WAIT",
+  "confidence": 0-100,
+  "entry_point": price_in_USD,
+  "stop_loss": price_in_USD,
+  "take_profit": [TP1, TP2, TP3],
+  "risk_level": "LOW" | "MEDIUM" | "HIGH",
+  "reasoning_vietnamese": "300-500 từ phân tích tiếng Việt, tập trung: pump validation, on-chain evidence, news impact, entry/exit reasoning, dump risk",
 
-3. **Pattern Matching (CRITICAL):**
-   - Compare CURRENT indicators with WINNING PATTERNS above:
-     * Current RSI/MFI ranges vs historical winning RSI/MFI ranges
-     * Current Volume Profile position (DISCOUNT/PREMIUM/VALUE_AREA) vs past wins
-     * Current SMC bias vs historical successful biases
-   - If setup MATCHES winning pattern:
-     * MUST mention in reasoning: "✅ Setup khớp với pattern thắng lịch sử (Win Rate: X%)"
-     * Use as STRONG confirmation → Increase confidence
-   - If setup MATCHES losing pattern:
-     * MUST mention: "⚠️ CẢNH BÁO: Setup khớp với pattern thua lịch sử (Loss Rate: X%)"
-     * STRONGLY favor WAIT unless overriding factors exist
+  "pump_validation": {{{{
+    "agrees_with_bot": true | false,
+    "ai_pump_score": 0-100,
+    "pump_type": "STEALTH_ACCUMULATION" | "WHALE_PUSH" | "RETAIL_FOMO" | "FAKE_PUMP" | "ORGANIC_GROWTH" | "NONE",
+    "pump_phase": "PRE_PUMP" | "EARLY_PUMP" | "MID_PUMP" | "LATE_PUMP" | "NO_PUMP",
+    "estimated_pump_time": "1-4h" | "4-12h" | "12-24h" | "24-48h" | "Already peaked" | "None",
+    "dump_risk_score": 0-100,
+    "reasoning": "Lý do xác nhận/phản bác pump (tiếng Việt)"
+  }}}},
 
-4. **RSI/MFI Learning Rules:**
-   - Historical winning RSI ranges = Zones where AI made CORRECT predictions
-   - If current RSI in losing range (e.g., past losses at RSI 60-70) → AVOID that signal
-   - If current RSI in winning range (e.g., past wins at RSI 30-40) → FAVOR that signal
-   - Same logic for MFI ranges
+  "onchain_analysis": {{{{
+    "whale_activity": "ACCUMULATING" | "DISTRIBUTING" | "NEUTRAL" | "UNKNOWN",
+    "exchange_flow": "NET_INFLOW" | "NET_OUTFLOW" | "NEUTRAL" | "UNKNOWN",
+    "large_transfers_detected": true | false,
+    "funding_rate_signal": "SHORT_SQUEEZE_POTENTIAL" | "NEUTRAL" | "OVERHEATED_LONGS" | "LONG_SQUEEZE_RISK" | "UNKNOWN",
+    "open_interest_trend": "INCREASING" | "STABLE" | "DECREASING" | "UNKNOWN",
+    "liquidation_risk": "HIGH" | "MODERATE" | "LOW" | "UNKNOWN",
+    "smart_money_direction": "BUYING" | "SELLING" | "NEUTRAL" | "UNKNOWN",
+    "token_unlock_risk": "HIGH" | "MODERATE" | "LOW" | "NONE" | "UNKNOWN"
+  }}}},
 
-5. **Volume Profile Position Learning:**
-   - Check if past WINS occurred at DISCOUNT, PREMIUM, or VALUE_AREA
-   - If 70%+ of past wins were at DISCOUNT and current is DISCOUNT → Strong BUY confluence
-   - If past losses concentrated at specific position → Avoid similar setups
+  "sentiment_analysis": {{{{
+    "news_sentiment": "VERY_POSITIVE" | "POSITIVE" | "NEUTRAL" | "NEGATIVE" | "VERY_NEGATIVE",
+    "latest_headline": "Tiêu đề tin tức liên quan nhất (tiếng Việt)",
+    "social_hype_level": "EXTREME" | "HIGH" | "MODERATE" | "LOW" | "NONE",
+    "fear_greed_index": 0-100,
+    "fear_greed_signal": "EXTREME_FEAR_BUY" | "FEAR" | "NEUTRAL" | "GREED" | "EXTREME_GREED_SELL",
+    "upcoming_catalyst": "Mô tả catalyst sắp tới (tiếng Việt)" | null,
+    "btc_impact": "BULLISH_SUPPORT" | "NEUTRAL" | "BEARISH_DRAG" | "UNKNOWN"
+  }}}},
 
-6. **Entry/SL/TP Learning (NEW):**
-   - Review previous analyses' entry/stop/target levels vs actual outcomes
-   - If past SL was hit too early → Widen current SL by 0.5-1%
-   - If past TP was not reached (price reversed before TP) → Lower current TP targets
-   - If past entry was too early (price went lower first) → Wait for better entry
-   - Example: "Analysis #3 had SL too tight at 2%, got stopped out before reversal. Using 3% SL now."
+  "key_points": ["Điểm chính 1 (tiếng Việt)", "Điểm chính 2", ...],
+  "warnings": ["Cảnh báo 1 (tiếng Việt)", "Cảnh báo 2", ...],
+  "market_sentiment": "BULLISH" | "BEARISH" | "NEUTRAL"
+}}}}
 
-7. **AI Learning Recommendation Compliance:**
-   - The "AI LEARNING RECOMMENDATION" text above provides SPECIFIC guidance
-   - MUST follow these rules in your analysis
-   - Example: If recommendation says "avoid RSI 60-70" and current RSI=65 → Lower confidence or WAIT
-
-8. **Reasoning Integration (MANDATORY IN JSON):**
-   - In "reasoning_vietnamese" field, you MUST explicitly reference historical data:
-     * "Dựa trên phân tích 7 ngày qua, setup tương tự có tỷ lệ thắng X%..."
-     * "RSI hiện tại [value] nằm trong vùng [range] đã thắng X lần/thua Y lần trong quá khứ..."
-     * "Volume Profile ở [position] - vị trí này có lịch sử thắng/thua như thế nào..."
-     * "Setup hiện tại giống Analysis #X (đã thắng/thua Y%), điều chỉnh SL/TP dựa trên bài học đó..."
-   - **MUST also summarize historical_learning JSON findings in Vietnamese**
-   - This proves you ACTUALLY analyzed historical context (not just ignored it)
-
-9. **Historical Learning JSON Integration (CRITICAL):**
-   - The "historical_learning" section in JSON MUST align with "reasoning_vietnamese" text
-   - If you mention "Analysis #2" in reasoning → historical_learning.similar_past_analysis must show analysis_number="#2"
-   - If you say confidence boosted → historical_learning.historical_adjustment must be positive
-   - If you mention pattern match → historical_learning.pattern_match must show matches_winning_pattern=true
-   - **CONSISTENCY CHECK**: Reasoning text + historical_learning JSON must tell same story
-   - Example alignment:
-     * Reasoning says: "Setup giống Analysis #2 thắng +5.3%, tăng confidence từ 68 lên 85"
-     * JSON shows: similar_past_analysis.found=true, analysis_number="#2", past_profit_percent=5.3
-     * JSON shows: base_confidence=68, final_confidence_calculation="68 + 12 + 5 = 85"
-
-10. **Confidence Calculation Formula:**
-   ```
-   BASE_CONFIDENCE = Technical Analysis (0-100) + Fundamental Analysis (0-100) / 2
-   
-   HISTORICAL_ADJUSTMENT:
-   - Win rate > 60%: +10 to +15
-   - Win rate 40-60%: 0 (neutral)
-   - Win rate < 40%: -15 to -20 (or force WAIT)
-   - Similar to past WIN: +5 to +10
-   - Similar to past LOSS: -10 to -15
-   
-   FINAL_CONFIDENCE = min(100, max(0, BASE_CONFIDENCE + HISTORICAL_ADJUSTMENT))
-   ```
-   - Example: BASE=70, Win rate=72%, Similar to Analysis #2 (WIN) → FINAL=70+12+8=90
-   - Example: BASE=65, Win rate=30% → Force WAIT (too risky)
-
-10. **WAIT Triggers Based on History:**
-   - If win rate < 35% for similar setup → FORCE WAIT (preserve capital)
-   - If losing pattern matches AND no strong overriding technicals → WAIT
-   - If current setup very similar to recent LOSS → WAIT unless conditions clearly different
-   - If only 1-2 historical analyses (insufficient data) → Note "limited historical context, be cautious"
-
-═══════════════════════════════════════════════════════════════════════════════
-🌍 SECTION 14: REAL-TIME DATA INTEGRATION (v3.3 - NEW)
-═══════════════════════════════════════════════════════════════════════════════
-
-**AI INSTRUCTION - MANDATORY DATA FETCHING:**
-
-You MUST fetch real-time data from public URLs before finalizing your analysis:
-
-1. **On-Chain Data (30% weight in final recommendation):**
-   - Visit https://studio.glassnode.com/metrics for Glassnode exchange flows
-   - Browse https://www.coinglass.com/ for funding rates and liquidations
-   - Check https://defillama.com/ for TVL and cross-chain flows
-   - Include fetched data in data_sources section with timestamps
-
-2. **Sentiment Data (25% weight in final recommendation):**
-   - Visit https://alternative.me/crypto/fear-and-greed-index/ for current Fear & Greed
-   - Browse https://x.com/ for latest {symbol} sentiment (search "{symbol} news", "{symbol} bullish")
-   - Check https://www.coindesk.com/ for latest institutional news
-   - Visit https://x.com/whale_alert for recent large transfers
-
-3. **Data Quality Requirements:**
-   - All fetched data MUST have timestamps in ISO 8601 format (2025-11-20T12:00:00Z)
-   - If data is >24h old, note this as "⚠️ Data age >24h" in warnings section
-   - If unable to fetch current data, explicitly state this in analysis
-   - Cross-verify multiple sources - require agreement from 2/3 sources for high confidence
-
-4. **Timestamp Integration:**
-   - real_time_timestamp field MUST be current (when you generate the analysis)
-   - Each data_source entry MUST have fetched_at timestamp
-   - Use exact timestamp when data was retrieved, not approximate time
-
-5. **Data Sources Documentation:**
-   - data_sources.on_chain_sources: List URLs and data fetched for each
-   - data_sources.sentiment_sources: List URLs and data fetched for each
-   - data_sources.fetched_metrics: Specific values like "BTC price ~$91,500", "Fear & Greed: 11"
-   - This ensures full transparency and reproducibility
-
-═══════════════════════════════════════════════════════════════════════════════
-🔍 SECTION 15: SENTIMENT-ADJUSTED CONFIDENCE FORMULA (v3.3 - NEW)
-═══════════════════════════════════════════════════════════════════════════════
-
-**FINAL CONFIDENCE CALCULATION WITH REAL-TIME DATA:**
-
-```
-TECHNICAL_SCORE = (RSI analysis + MFI analysis + Volume profile + SMC bias + Pump signals) / 5
-
-HISTORICAL_SCORE = Historical Adjustment (from past analyses and patterns)
-
-SENTIMENT_SCORE = (Fear & Greed impact + News sentiment + Whale activity + On-chain flows) / 4
-
-INSTITUTIONAL_WEIGHT = On-chain data quality and confirmation strength (0-100)
-
-FINAL_CONFIDENCE = (
-  TECHNICAL_SCORE × 0.40 +
-  HISTORICAL_SCORE × 0.25 +
-  SENTIMENT_SCORE × 0.20 +
-  INSTITUTIONAL_WEIGHT × 0.15
-)
-
-APPLIED_ADJUSTMENTS:
-1. If Fear & Greed < 20: +15 confidence for BUY (contrarian)
-2. If Fear & Greed > 80: -15 confidence for SELL (greed risk)
-3. If whale alerts show >$1B to exchange: -10 confidence (distribution risk)
-4. If Glassnode flows positive >$500M: +8 confidence (institutional inflows)
-5. If news extremely negative but technical bullish: -5 confidence (caution)
-6. If sentiment divergence (retail bullish, institutions bearish): -10 confidence
-```
-
-**EXAMPLE CALCULATION:**
-- Technical Score: 72 (good confluence)
-- Historical Score: +10 (similar to past WIN, 68% win rate)
-- Sentiment Score: 65 (Fear & Greed 15 = contrarian +15, news +5, flows positive)
-- Institutional Weight: 75 (Glassnode confirmed inflow)
-
-Final = (72 × 0.40) + (10 × 0.25) + (65 × 0.20) + (75 × 0.15)
-     = 28.8 + 2.5 + 13.0 + 11.25
-     = 55.55 → Round to 56 (medium-high confidence)
-
-With adjustments: 56 + 15 (Fear & Greed extreme) = 71 final confidence
-
-═══════════════════════════════════════════════════════════════════════════════
-✅ FINAL CHECKLIST (v3.3 - BEFORE SUBMITTING)
-═══════════════════════════════════════════════════════════════════════════════
-
-**REQUIRED FOR EVERY RESPONSE:**
-
-1. ✅ real_time_timestamp included (ISO 8601 format)
-2. ✅ data_sources section with URLs and fetched_at timestamps
-3. ✅ sentiment_analysis section filled with Fear & Greed, social, news, whale alerts
-4. ✅ on_chain_analysis section with Glassnode, CoinGlass, DeFiLlama data
-5. ✅ historical_learning section with all sub-fields filled
-6. ✅ reasoning_vietnamese 100% in Vietnamese (300-500 words)
-7. ✅ key_points, conflicting_signals, warnings all in Vietnamese
-8. ✅ Entry/SL/TP specific and justified
-9. ✅ Confidence calculation explained (technical + historical + sentiment)
-10. ✅ Risk level appropriate for asset type
-11. ✅ Position sizing within recommended ranges
-12. ✅ No major internal contradictions (if reasoning says "bullish" but confidence <50, explain)
-13. ✅ All numeric fields properly typed (not strings where integers expected)
-14. ✅ JSON properly formatted and parseable
-
-**IF ANY REQUIREMENT NOT MET:** 
-- Do not submit incomplete analysis
-- Re-check and complete all required sections
-- Ensure data is current (fetch fresh if needed)
-**📊 EXAMPLES OF CORRECT HISTORICAL INTEGRATION:**
-
-✅ **EXCELLENT ANALYSIS WITH PREVIOUS ANALYSES REFERENCE:**
-```json
-{{
-  "confidence": 85,
-  "reasoning_vietnamese": "Phân tích kỹ thuật cơ bản cho confidence 68 điểm. 
-Dựa trên dữ liệu lịch sử 7 ngày, setup tương tự (RSI 30-40, MFI 25-35, Volume Profile ở DISCOUNT) 
-có tỷ lệ thắng 75% (9/12). RSI hiện tại 32 khớp với vùng này → +12 điểm.
-
-Đặc biệt, điều kiện hiện tại rất giống Analysis #2 (ngày 10/11) với:
-- RSI 31 vs 32 hiện tại
-- MFI 28 vs 27 hiện tại  
-- Volume Profile ở DISCOUNT (cùng vị trí)
-- Entry $103,200 đã thắng +5.3%, hit TP2
-
-Tuy nhiên, Analysis #2 có SL hơi rộng (3.5%), giá không test SL. 
-Do đó sử dụng SL chặt hơn 2.8% để tối ưu risk/reward.
-
-Final confidence: 68 + 12 (win rate) + 5 (similar to past win) = 85",
-  
-  "historical_learning": {{
-    "total_past_analyses": 12,
-    "win_rate_percent": 75,
-    "base_confidence": 68,
-    "historical_adjustment": 17,
-    "final_confidence_calculation": "Base 68 + Win Rate 75% (+12) + Similar to Analysis #2 WIN (+5) = 85",
-    "similar_past_analysis": {{
-      "found": true,
-      "analysis_number": "#2",
-      "analysis_date": "2025-11-10",
-      "similarity_factors": ["RSI 31 vs 32 current", "MFI 28 vs 27 current", "Both at DISCOUNT position", "Both BUY signals"],
-      "past_outcome": "WIN",
-      "past_profit_percent": 5.3,
-      "lessons_learned": "Analysis #2 entry worked well, hit TP2. SL was 3.5% but never tested, could have been tighter.",
-      "adjustments_made": "Tightened SL from 3.5% to 2.8% to improve risk/reward ratio while maintaining safety margin."
-    }},
-    "pattern_match": {{
-      "matches_winning_pattern": true,
-      "matches_losing_pattern": false,
-      "winning_pattern_details": "RSI 30-40, MFI 25-35, DISCOUNT position - 75% win rate (9/12 trades)",
-      "losing_pattern_details": null,
-      "pattern_confidence_impact": "Increase by 12 points due to strong historical win rate"
-    }},
-    "entry_stop_learning": {{
-      "past_sl_too_tight": false,
-      "past_sl_too_wide": true,
-      "past_tp_not_reached": false,
-      "past_entry_too_early": false,
-      "current_adjustments": "Tightened SL from historical 3.5% to 2.8% based on Analysis #2 not testing SL. TP targets kept similar as Analysis #2 hit TP2 successfully."
-    }},
-    "recommendation_rationale": "Historical win rate of 75% for this setup type combined with strong similarity to past winning Analysis #2 justifies high confidence. SL adjustment learned from past success improves risk/reward."
-  }}
-}}
-```
-
-✅ **EXCELLENT ANALYSIS WITH LOSS AVOIDANCE:**
-```json
-{{
-  "recommendation": "WAIT",
-  "confidence": 0,
-  "reasoning_vietnamese": "Phân tích kỹ thuật cho BUY signal với base confidence 62.
-Tuy nhiên, ⚠️ CẢNH BÁO: Setup hiện tại giống Analysis #4 (ngày 09/11) đã thua -3.8%:
-- RSI 67 (Analysis #4: RSI 65) - Cùng vùng overbought
-- MFI 72 (Analysis #4: MFI 70) - Quá cao
-- Volume Profile ở PREMIUM (Analysis #4: PREMIUM) - Đã quá đắt
-- Entry $105,000 đã bị rejected, hit SL
-
-Dữ liệu lịch sử cho thấy RSI 60-70 + PREMIUM position có win rate chỉ 30% (3/10).
-Khuyến nghị WAIT cho đến khi giá về DISCOUNT hoặc RSI xuống dưới 50.",
-  
-  "historical_learning": {{
-    "total_past_analyses": 10,
-    "win_rate_percent": 30,
-    "base_confidence": 62,
-    "historical_adjustment": -20,
-    "final_confidence_calculation": "Base 62 - Win Rate 30% (-18) - Similar to Analysis #4 LOSS (-2) = 42 → FORCED WAIT",
-    "similar_past_analysis": {{
-      "found": true,
-      "analysis_number": "#4",
-      "analysis_date": "2025-11-09",
-      "similarity_factors": ["RSI 65 vs 67 current (both overbought)", "MFI 70 vs 72 current (both high)", "Both at PREMIUM position", "Both BUY attempts at resistance"],
-      "past_outcome": "LOSS",
-      "past_profit_percent": -3.8,
-      "lessons_learned": "Analysis #4 tried to buy at PREMIUM with overbought indicators. Price rejected and hit SL. Buying at PREMIUM with RSI>60 has proven risky.",
-      "adjustments_made": "Changed recommendation from BUY to WAIT. Will only consider BUY when price returns to DISCOUNT or RSI drops below 50."
-    }},
-    "pattern_match": {{
-      "matches_winning_pattern": false,
-      "matches_losing_pattern": true,
-      "winning_pattern_details": null,
-      "losing_pattern_details": "RSI 60-70, MFI 65-75, PREMIUM position - 30% win rate (3/10 trades, 7 losses)",
-      "pattern_confidence_impact": "Decrease by 18 points due to poor historical performance in this setup"
-    }},
-    "entry_stop_learning": {{
-      "past_sl_too_tight": false,
-      "past_sl_too_wide": false,
-      "past_tp_not_reached": true,
-      "past_entry_too_early": true,
-      "current_adjustments": "Recommendation changed to WAIT instead of attempting early entry. Will wait for better conditions (DISCOUNT or lower RSI) before considering entry."
-    }},
-    "recommendation_rationale": "Strong similarity to past losing Analysis #4 combined with 30% win rate for this pattern type makes this trade too risky. Preserving capital by waiting for better setup."
-  }}
-}}
-```
-
-❌ **BAD ANALYSIS (DO NOT DO THIS):**
-```json
-{{
-  "confidence": 65,
-  "reasoning_vietnamese": "RSI quá bán, MFI thấp, có thể sẽ tăng.",
-  "historical_learning": {{}}
-}}
-```
-→ Không mention historical data, historical_learning empty = AI không học được gì!
-
-**⚠️ CRITICAL REMINDERS:**
-- PREVIOUS ANALYSES DETAILS section shows ACTUAL past recommendations - READ AND USE THEM
-- Historical data is NOT optional - it MUST influence your final recommendation
-- If you see losing patterns, AVOID them (don't repeat mistakes)
-- If you see winning patterns, FAVOR them (capitalize on what works)
-- Always explain WHY historical data changed your confidence score
-- Learning from past = Better future predictions = Higher user trust
-
-11. **Scoring methodology (UPDATED):**
-    - Technical score = RSI+MFI (15%) + Stoch+RSI (15%) + Volume (10%) + Candles (10%) + Volume Profile (15%) + FVG (10%) + OB (10%) + S/R (10%) + SMC (15%)
-    - Fundamental score = volume strength (40%), liquidity (30%), market sentiment (30%)
-12. **Entry/Exit Recommendations:**
-    - Entry: Near VAL, bullish FVG, bullish OB, support zones
-    - Stop Loss: Below nearest support (OB/S/R zone) with 1-2 ATR buffer
-    - Take Profit: At VAH, bearish FVG, resistance zones, EQH levels
+CRITICAL RULES:
+1. ALL text fields MUST be in VIETNAMESE
+2. Use Google Search to find REAL data — do not fabricate numbers
+3. If data unavailable, use "UNKNOWN" or null — NOT fabricated data
+4. entry_point = current price or nearest support for BUY
+5. stop_loss = 3-5% below entry for small caps, 2-3% for large caps
+6. take_profit: TP1 (5-10%), TP2 (15-25%), TP3 (30-50%)
+7. Always include dump_risk_score assessment
+8. reasoning_vietnamese must explain: pump signal validation + on-chain evidence + news impact
 """
+        
+        # Old prompt sections removed in v4.0 (RSI/MFI/Stoch/VP/FVG/OB/SMC/institutional JSON)
+        # AI now focuses on pump validation, on-chain, and sentiment
+        
 
         # === NEW: ADD PATTERN RECOGNITION CONTEXT ===
         pattern_context = data.get('pattern_context')
@@ -2846,7 +2007,11 @@ Khuyến nghị WAIT cho đến khi giá về DISCOUNT hoặc RSI xuống dướ
             # Call Gemini API
             logger.info(f"Calling Gemini API for {symbol}...")
             try:
-                response = self.model.generate_content(prompt)
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=self.generate_config
+                )
             except Exception as api_error:
                 logger.error(f"Gemini API call failed for {symbol}: {api_error}")
                 # Check for specific errors
@@ -2859,14 +2024,36 @@ Khuyến nghị WAIT cho đến khi giá về DISCOUNT hoặc RSI xuống dướ
                     logger.error("⚠️ API request timeout")
                 return None
             
-            if not response or not response.text:
+            if not response:
                 logger.error(f"Empty response from Gemini for {symbol}")
                 return None
-            
-            logger.info(f"Got response from Gemini for {symbol} (length: {len(response.text)} chars)")
-            
+
+            # Extract text - handle search grounding response structure
+            response_text_raw = None
+            try:
+                if response.text:
+                    response_text_raw = response.text
+            except Exception:
+                pass
+
+            # Fallback: iterate through candidates/parts for text
+            if not response_text_raw:
+                try:
+                    for candidate in response.candidates:
+                        for part in candidate.content.parts:
+                            if hasattr(part, 'text') and part.text:
+                                response_text_raw = (response_text_raw or '') + part.text
+                except Exception as e:
+                    logger.warning(f"Could not extract parts text: {e}")
+
+            if not response_text_raw:
+                logger.error(f"Empty response from Gemini for {symbol}")
+                return None
+
+            logger.info(f"Got response from Gemini for {symbol} (length: {len(response_text_raw)} chars)")
+
             # Parse JSON response
-            response_text = response.text.strip()
+            response_text = response_text_raw.strip()
             
             # Remove markdown code blocks if present
             if response_text.startswith('```json'):
@@ -3172,30 +2359,9 @@ Khuyến nghị WAIT cho đến khi giá về DISCOUNT hoặc RSI xuống dướ
     
     def format_response(self, analysis: Dict) -> Tuple[str, str, str]:
         """
-        Format analysis into 3 separate messages
-        
-        Args:
-            analysis: Analysis result from Gemini
-            
-        Returns:
-            Tuple of (summary_msg, technical_msg, reasoning_msg)
-        
-        MESSAGE ORDER (v2.2):
-        1. ENTRY/TP/SL SUMMARY - What to do (recommendation + prices) - FIRST for quick decision
-        2. TECHNICAL DETAILS - Why to do it (analysis + indicators) - Context for decision
-        3. AI REASONING - Deep analysis - Extended reading
+        Format analysis into 3 separate messages focusing on pump detection
         """
         def split_long_message(msg: str, max_length: int = 4000) -> list:
-            """
-            Split message into multiple parts if too long, keeping formatting intact
-            
-            Args:
-                msg: Message to split
-                max_length: Maximum length per message part
-                
-            Returns:
-                List of message parts
-            """
             if len(msg) <= max_length:
                 return [msg]
             
@@ -3204,308 +2370,139 @@ Khuyến nghị WAIT cho đến khi giá về DISCOUNT hoặc RSI xuống dướ
             lines = msg.split('\n')
             
             for line in lines:
-                # If adding this line would exceed limit, save current part and start new one
                 if len(current_part) + len(line) + 1 > max_length:
                     if current_part:
                         parts.append(current_part.rstrip())
                         current_part = ""
-                
                 current_part += line + '\n'
             
-            # Add last part
             if current_part:
                 parts.append(current_part.rstrip())
-            
             return parts
-        
-        try:
-            symbol = analysis['symbol']
-            rec = analysis['recommendation']
-            conf = analysis['confidence']
-            entry = analysis['entry_point']
-            stop = analysis['stop_loss']
-            targets = analysis['take_profit']
-            period = analysis['expected_holding_period']
-            risk = analysis['risk_level']
-            style = analysis.get('trading_style', 'swing')
+
+        def encode_vietnamese(text):
+            if not isinstance(text, str):
+                text = str(text)
             
-            # Message 1: ENTRY/TP/SL Summary (MOVED TO TOP)
-            # This is the ACTION PLAN - Users see what Gemini recommends FIRST
+            vietnamese_map = {
+                'à': '&#224;', 'á': '&#225;', 'ả': '&#7843;', 'ã': '&#227;', 'ạ': '&#7841;',
+                'ă': '&#259;', 'ằ': '&#7857;', 'ắ': '&#7855;', 'ẳ': '&#7859;', 'ẵ': '&#7861;', 'ặ': '&#7863;',
+                'â': '&#226;', 'ầ': '&#7847;', 'ấ': '&#7845;', 'ẩ': '&#7849;', 'ẫ': '&#7851;', 'ậ': '&#7853;',
+                'đ': '&#273;',
+                'è': '&#232;', 'é': '&#233;', 'ẻ': '&#7867;', 'ẽ': '&#7869;', 'ẹ': '&#7865;',
+                'ê': '&#234;', 'ề': '&#7873;', 'ế': '&#7871;', 'ể': '&#7875;', 'ễ': '&#7877;', 'ệ': '&#7879;',
+                'ì': '&#236;', 'í': '&#237;', 'ỉ': '&#7881;', 'ĩ': '&#297;', 'ị': '&#7883;',
+                'ò': '&#242;', 'ó': '&#243;', 'ỏ': '&#7887;', 'õ': '&#245;', 'ọ': '&#7885;',
+                'ô': '&#244;', 'ồ': '&#7891;', 'ố': '&#7889;', 'ổ': '&#7893;', 'ỗ': '&#7895;', 'ộ': '&#7897;',
+                'ơ': '&#417;', 'ờ': '&#7901;', 'ớ': '&#7899;', 'ở': '&#7903;', 'ỡ': '&#7905;', 'ợ': '&#7907;',
+                'ù': '&#249;', 'ú': '&#250;', 'ủ': '&#7911;', 'ũ': '&#361;', 'ụ': '&#7909;',
+                'ư': '&#432;', 'ừ': '&#7915;', 'ứ': '&#7913;', 'ử': '&#7917;', 'ữ': '&#7919;', 'ự': '&#7921;',
+                'ỳ': '&#7923;', 'ý': '&#253;', 'ỷ': '&#7927;', 'ỹ': '&#7929;', 'ỵ': '&#7925;',
+                'À': '&#192;', 'Á': '&#193;', 'Ả': '&#7842;', 'Ã': '&#195;', 'Ạ': '&#7840;',
+                'Ă': '&#258;', 'Ằ': '&#7856;', 'Ắ': '&#7854;', 'Ẳ': '&#7858;', 'Ẵ': '&#7860;', 'Ặ': '&#7862;',
+                'Â': '&#194;', 'Ầ': '&#7846;', 'Ấ': '&#7844;', 'Ẩ': '&#7848;', 'Ẫ': '&#7850;', 'Ậ': '&#7852;',
+                'Đ': '&#272;',
+                'È': '&#200;', 'É': '&#201;', 'Ẻ': '&#7866;', 'Ẽ': '&#7868;', 'Ẹ': '&#7864;',
+                'Ê': '&#202;', 'Ề': '&#7872;', 'Ế': '&#7870;', 'Ể': '&#7874;', 'Ễ': '&#7876;', 'Ệ': '&#7878;',
+                'Ì': '&#204;', 'Í': '&#205;', 'Ỉ': '&#7880;', 'Ĩ': '&#296;', 'Ị': '&#7882;',
+                'Ò': '&#210;', 'Ó': '&#211;', 'Ỏ': '&#7886;', 'Õ': '&#213;', 'Ọ': '&#7884;',
+                'Ô': '&#212;', 'Ồ': '&#7890;', 'Ố': '&#7888;', 'Ổ': '&#7892;', 'Ỗ': '&#7894;', 'Ộ': '&#7896;',
+                'Ơ': '&#416;', 'Ờ': '&#7900;', 'Ớ': '&#7898;', 'Ở': '&#7902;', 'Ỡ': '&#7904;', 'Ợ': '&#7906;',
+                'Ù': '&#217;', 'Ú': '&#218;', 'Ủ': '&#7910;', 'Ũ': '&#360;', 'Ụ': '&#7908;',
+                'Ư': '&#431;', 'Ừ': '&#7914;', 'Ứ': '&#7912;', 'Ử': '&#7916;', 'Ữ': '&#7918;', 'Ự': '&#7920;',
+                'Ỳ': '&#7922;', 'Ý': '&#221;', 'Ỷ': '&#7926;', 'Ỹ': '&#7928;', 'Ỵ': '&#7924;',
+            }
+            text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+            for viet_char, html_entity in vietnamese_map.items():
+                text = text.replace(viet_char, html_entity)
+            return text
+
+        try:
+            symbol = analysis.get('symbol', 'UNKNOWN')
+            rec = analysis.get('recommendation', 'WAIT')
+            conf = analysis.get('confidence', 0)
+            entry = analysis.get('entry_point', 0)
+            stop = analysis.get('stop_loss', 0)
+            targets = analysis.get('take_profit', [])
+            risk = analysis.get('risk_level', 'UNKNOWN')
+            
+            # --- Message 1: SUMMARY PLAN ---
             rec_emoji = "🟢" if rec == "BUY" else "🔴" if rec == "SELL" else "🟡" if rec == "HOLD" else "⚪"
             
-            summary = "🤖 <b>GEMINI AI ANALYSIS v2.2</b>\n\n"
-            summary += f"💎 <b>{symbol}</b> | 📊 {style.upper()}\n\n"
+            summary = "🤖 <b>GEMINI AI PUMP DETECTOR v4.0</b>\n\n"
+            summary += f"💎 <b>{symbol}</b>\n\n"
             summary += f"{rec_emoji} <b>KHUYẾN NGHỊ:</b> {rec}\n"
             summary += f"🎯 <b>Độ Tin Cậy:</b> {conf}%\n"
             summary += f"⚠️ <b>Mức Rủi Ro:</b> {risk}\n\n"
             
-            # Only show trading plan if recommendation is actionable (BUY/SELL/HOLD)
             if rec in ["BUY", "SELL", "HOLD"] and entry > 0:
                 summary += "💰 <b>KẾ HOẠCH GIAO DỊCH</b>\n"
                 summary += f"📍 <b>Điểm Vào:</b> ${self.binance.format_price(symbol, entry)}\n"
                 summary += f"🛑 <b>Cắt Lỗ:</b> ${self.binance.format_price(symbol, stop)}\n"
-                summary += f"🎯 <b>Chốt Lời:</b>\n"
+                summary += "🎯 <b>Chốt Lời:</b>\n"
                 for i, target in enumerate(targets, 1):
-                    summary += f"   • TP{i}: ${self.binance.format_price(symbol, target)}\n"
-                summary += f"⏱ <b>Thời Gian:</b> {period}\n\n"
+                    summary += f"   • TP{i}: ${self.binance.format_price(symbol, target)}\n\n"
             elif rec == "WAIT":
                 summary += "⏸ <b>KHÔNG NÊN GIAO DỊCH</b>\n"
-                summary += "📋 Tín hiệu chưa rõ ràng, cần chờ xác nhận\n"
-                summary += "💡 Theo dõi thêm và đợi setup tốt hơn\n\n"
-            
-            summary += "<i>💡 Dữ liệu từ Gemini AI 2.0 Flash</i>"
-            
-            # Message 2: Technical Details
-            tech = "📊 <b>PH&#194;N T&#205;CH K&#7926; THU&#7852;T CHI TI&#7870;T</b>\n\n"
+                summary += "📋 Tín hiệu chưa rõ ràng hoặc rủi ro xả hàng (dump risk) quá cao.\n\n"
+                
+            # --- Message 2: PUMP & ON-CHAIN ANALYSIS ---
+            tech = "📊 <b>CHI TIẾT PUMP & ON-CHAIN</b>\n\n"
             tech += f"💎 <b>{symbol}</b>\n\n"
             
-            # Data used
-            data_used = analysis.get('data_used', {})
-            tech += "🔍 <b>Ch&#7881; B&#225;o S&#7917; D&#7909;ng:</b>\n"
-            tech += f"• RSI+MFI: {data_used.get('rsi_mfi_consensus', 'N/A')}\n"
-            tech += f"• Stoch+RSI: {data_used.get('stoch_rsi_consensus', 'N/A')}\n"
-            
-            pump_score = data_used.get('pump_score', 0)
-            if pump_score >= 80:
-                tech += f"• 🚀 Pump: {pump_score:.0f}% (Cao)\n"
-            elif pump_score > 0:
-                tech += f"• Pump: {pump_score:.0f}%\n"
-            
-            tech += f"• Gi&#225;: ${self.binance.format_price(symbol, data_used.get('current_price', 0))}\n\n"
-            
-            # === NEW v2.2: Add Asset Type Context ===
-            asset_type = analysis.get('asset_type', 'UNKNOWN')
-            tech += f"🎯 <b>Asset Type:</b> {asset_type}\n"
-            
-            # Helper function to encode Vietnamese characters to HTML entities
-            def encode_vietnamese(text):
-                """Encode Vietnamese characters to HTML entities to prevent Telegram parsing errors"""
-                if not isinstance(text, str):
-                    text = str(text)
+            pump = analysis.get('pump_validation', {})
+            if pump:
+                tech += "🚀 <b>XÁC NHẬN PUMP:</b>\n"
+                bot_match = "Đồng thuận" if pump.get('agrees_with_bot') else "Phản bác"
+                tech += f"• AI với Bot: {bot_match}\n"
+                tech += f"• Điểm AI Pump: {pump.get('ai_pump_score', 0)}/100\n"
+                tech += f"• Loại: {encode_vietnamese(pump.get('pump_type', ''))}\n"
+                tech += f"• Giai đoạn: {encode_vietnamese(pump.get('pump_phase', ''))}\n"
+                tech += f"• Rủi ro xả (Dump Risk): {pump.get('dump_risk_score', 0)}/100\n\n"
+
+            onchain = analysis.get('onchain_analysis', {})
+            if onchain:
+                tech += "🔗 <b>ON-CHAIN & PHÁI SINH:</b>\n"
+                tech += f"• Cá mập (Whales): {encode_vietnamese(onchain.get('whale_activity', ''))}\n"
+                tech += f"• Dòng tiền sàn: {encode_vietnamese(onchain.get('exchange_flow', ''))}\n"
+                tech += f"• Funding Rate: {encode_vietnamese(onchain.get('funding_rate_signal', ''))}\n"
+                tech += f"• Xu hướng OI: {encode_vietnamese(onchain.get('open_interest_trend', ''))}\n"
+                tech += f"• Rủi ro Token Unlock: {encode_vietnamese(onchain.get('token_unlock_risk', ''))}\n\n"
                 
-                # Vietnamese character mapping to HTML entities
-                vietnamese_map = {
-                    # Lowercase
-                    'à': '&#224;', 'á': '&#225;', 'ả': '&#7843;', 'ã': '&#227;', 'ạ': '&#7841;',
-                    'ă': '&#259;', 'ằ': '&#7857;', 'ắ': '&#7855;', 'ẳ': '&#7859;', 'ẵ': '&#7861;', 'ặ': '&#7863;',
-                    'â': '&#226;', 'ầ': '&#7847;', 'ấ': '&#7845;', 'ẩ': '&#7849;', 'ẫ': '&#7851;', 'ậ': '&#7853;',
-                    'đ': '&#273;',
-                    'è': '&#232;', 'é': '&#233;', 'ẻ': '&#7867;', 'ẽ': '&#7869;', 'ẹ': '&#7865;',
-                    'ê': '&#234;', 'ề': '&#7873;', 'ế': '&#7871;', 'ể': '&#7875;', 'ễ': '&#7877;', 'ệ': '&#7879;',
-                    'ì': '&#236;', 'í': '&#237;', 'ỉ': '&#7881;', 'ĩ': '&#297;', 'ị': '&#7883;',
-                    'ò': '&#242;', 'ó': '&#243;', 'ỏ': '&#7887;', 'õ': '&#245;', 'ọ': '&#7885;',
-                    'ô': '&#244;', 'ồ': '&#7891;', 'ố': '&#7889;', 'ổ': '&#7893;', 'ỗ': '&#7895;', 'ộ': '&#7897;',
-                    'ơ': '&#417;', 'ờ': '&#7901;', 'ớ': '&#7899;', 'ở': '&#7903;', 'ỡ': '&#7905;', 'ợ': '&#7907;',
-                    'ù': '&#249;', 'ú': '&#250;', 'ủ': '&#7911;', 'ũ': '&#361;', 'ụ': '&#7909;',
-                    'ư': '&#432;', 'ừ': '&#7915;', 'ứ': '&#7913;', 'ử': '&#7917;', 'ữ': '&#7919;', 'ự': '&#7921;',
-                    'ỳ': '&#7923;', 'ý': '&#253;', 'ỷ': '&#7927;', 'ỹ': '&#7929;', 'ỵ': '&#7925;',
-                    # Uppercase
-                    'À': '&#192;', 'Á': '&#193;', 'Ả': '&#7842;', 'Ã': '&#195;', 'Ạ': '&#7840;',
-                    'Ă': '&#258;', 'Ằ': '&#7856;', 'Ắ': '&#7854;', 'Ẳ': '&#7858;', 'Ẵ': '&#7860;', 'Ặ': '&#7862;',
-                    'Â': '&#194;', 'Ầ': '&#7846;', 'Ấ': '&#7844;', 'Ẩ': '&#7848;', 'Ẫ': '&#7850;', 'Ậ': '&#7852;',
-                    'Đ': '&#272;',
-                    'È': '&#200;', 'É': '&#201;', 'Ẻ': '&#7866;', 'Ẽ': '&#7868;', 'Ẹ': '&#7864;',
-                    'Ê': '&#202;', 'Ề': '&#7872;', 'Ế': '&#7870;', 'Ể': '&#7874;', 'Ễ': '&#7876;', 'Ệ': '&#7878;',
-                    'Ì': '&#204;', 'Í': '&#205;', 'Ỉ': '&#7880;', 'Ĩ': '&#296;', 'Ị': '&#7882;',
-                    'Ò': '&#210;', 'Ó': '&#211;', 'Ỏ': '&#7886;', 'Õ': '&#213;', 'Ọ': '&#7884;',
-                    'Ô': '&#212;', 'Ồ': '&#7890;', 'Ố': '&#7888;', 'Ổ': '&#7892;', 'Ỗ': '&#7894;', 'Ộ': '&#7896;',
-                    'Ơ': '&#416;', 'Ờ': '&#7900;', 'Ớ': '&#7898;', 'Ở': '&#7902;', 'Ỡ': '&#7904;', 'Ợ': '&#7906;',
-                    'Ù': '&#217;', 'Ú': '&#218;', 'Ủ': '&#7910;', 'Ũ': '&#360;', 'Ụ': '&#7908;',
-                    'Ư': '&#431;', 'Ừ': '&#7914;', 'Ứ': '&#7912;', 'Ử': '&#7916;', 'Ữ': '&#7918;', 'Ự': '&#7920;',
-                    'Ỳ': '&#7922;', 'Ý': '&#221;', 'Ỷ': '&#7926;', 'Ỹ': '&#7928;', 'Ỵ': '&#7924;',
-                }
-                
-                # First escape HTML special characters
-                text = (text.replace('&', '&amp;')
-                           .replace('<', '&lt;')
-                           .replace('>', '&gt;')
-                           .replace('"', '&quot;'))
-                
-                # Then encode Vietnamese characters
-                for viet_char, html_entity in vietnamese_map.items():
-                    text = text.replace(viet_char, html_entity)
-                
-                return text
-            
-            # Legacy escape_html for backward compatibility (redirects to encode_vietnamese)
-            def escape_html(text):
-                """Deprecated: Use encode_vietnamese instead"""
-                return encode_vietnamese(text)
-            
-            # Add asset-specific context
-            sector = analysis.get('sector_analysis', {})
-            if sector and sector.get('sector') != 'Unknown':
-                tech += f"• Sector: {escape_html(sector.get('sector', ''))}\n"
-                tech += f"• Momentum: {escape_html(sector.get('sector_momentum', ''))}\n"
-                tech += f"• Rotation Risk: {escape_html(sector.get('rotation_risk', ''))}\n\n"
-            
-            corr = analysis.get('correlation_analysis', {})
-            if corr:
-                # Safely convert to int, handle both string and int
-                try:
-                    btc_corr = int(corr.get('btc_correlation', 0)) if corr.get('btc_correlation') else 0
-                    eth_corr = int(corr.get('eth_correlation', 0)) if corr.get('eth_correlation') else 0
-                    indep_prob = int(corr.get('independent_move_probability', 50)) if corr.get('independent_move_probability') else 50
-                    
-                    if btc_corr > 0:
-                        tech += f"🔗 <b>Correlation:</b>\n"
-                        tech += f"• BTC: {btc_corr}%\n"
-                        tech += f"• ETH: {eth_corr}%\n"
-                        tech += f"• Independent: {indep_prob}%\n\n"
-                except (ValueError, TypeError):
-                    # Skip correlation section if values can't be converted
-                    pass
-            
-            fund = analysis.get('fundamental_analysis', {})
-            if fund:
-                # Safely convert health_score to int
-                try:
-                    health_score = int(fund.get('health_score', 0)) if fund.get('health_score') is not None else 0
-                    if health_score >= 0:
-                        tech += f"💪 <b>Fundamental:</b>\n"
-                        tech += f"• Health: {health_score}/100\n"
-                        tech += f"• Tokenomics: {escape_html(fund.get('tokenomics', 'Unknown'))}\n"
-                        tech += f"• Risk: {escape_html(fund.get('centralization_risk', 'Medium'))}\n"
-                        tech += f"• Ecosystem: {escape_html(fund.get('ecosystem_strength', 'Moderate'))}\n\n"
-                except (ValueError, TypeError):
-                    # Skip if health_score can't be converted
-                    pass
-            
-            sizing = analysis.get('position_sizing_recommendation', {})
-            if sizing and sizing.get('position_size_percent'):
-                tech += f"📊 <b>Position Sizing:</b>\n"
-                tech += f"• Size: {escape_html(sizing.get('position_size_percent', ''))}\n"
-                tech += f"• Risk: {escape_html(sizing.get('risk_per_trade', ''))}\n"
-                tech += f"• Leverage: {escape_html(sizing.get('recommended_leverage', ''))}\n"
-                if sizing.get('liquidity_notes'):
-                    tech += f"• Liquidity: {escape_html(sizing.get('liquidity_notes', ''))}\n"
-                tech += "\n"
-            
-            # Macro context for BTC or altcoins
-            macro = analysis.get('macro_context', {})
-            if macro:
-                if asset_type == 'BTC':
-                    tech += f"🏛️ <b>BTC Macro:</b>\n"
-                    tech += f"• Dominance: {escape_html(macro.get('btc_dominance', 'N/A'))}\n"
-                    tech += f"• Flows: {escape_html(macro.get('institutional_flows', 'N/A'))}\n"
-                    tech += f"• ETF: {escape_html(macro.get('etf_status', 'N/A'))}\n"
-                    tech += f"• Whale: {escape_html(macro.get('whale_activity', 'N/A'))}\n\n"
-                elif asset_type in ['ETH', 'LARGE_CAP_ALT', 'MID_CAP_ALT']:
-                    tech += f"🔗 <b>Altcoin Context:</b>\n"
-                    tech += f"• Sector: {escape_html(macro.get('sector_rotation_status', 'N/A'))}\n"
-                    tech += f"• BTC Depend: {escape_html(macro.get('btc_dependency', 'N/A'))}\n"
-                    if macro.get('project_catalysts'):
-                        tech += f"• Catalysts: {escape_html(macro.get('project_catalysts', ''))}\n"
-                    tech += f"• Liquidity: {escape_html(macro.get('liquidity_assessment', 'N/A'))}\n\n"
-            
-            # Scores
-            # Safely convert scores to numbers
-            try:
-                tech_score = float(analysis.get('technical_score', 0)) if analysis.get('technical_score') is not None else 0
-                fund_score = float(analysis.get('fundamental_score', 0)) if analysis.get('fundamental_score') is not None else 0
-            except (ValueError, TypeError):
-                tech_score = 0
-                fund_score = 0
-            
-            tech += "📈 <b>&#272;i&#7875;m &#272;&#225;nh Gi&#225;:</b>\n"
-            tech += f"• K&#7929; Thu&#7853;t: {tech_score:.0f}/100\n"
-            tech += f"• C&#417; B&#7843;n: {fund_score:.0f}/100\n"
-            tech += f"• T&#7893;ng: {(tech_score + fund_score)/2:.0f}/100\n\n"
-            
-            # Market sentiment
-            sentiment = analysis.get('market_sentiment', 'NEUTRAL')
-            sentiment_emoji = "🟢" if sentiment == "BULLISH" else "🔴" if sentiment == "BEARISH" else "🟡"
-            sentiment_vn = "T&#259;ng" if sentiment == "BULLISH" else "Gi&#7843;m" if sentiment == "BEARISH" else "Trung L&#7853;p"
-            tech += f"💭 <b>T&#226;m L&#253;:</b> {sentiment_emoji} {sentiment_vn}\n\n"
-            
-            # Key points
-            tech += "🎯 <b>&#272;i&#7875;m Ch&#237;nh:</b>\n"
-            for point in analysis.get('key_points', []):
-                # Encode Vietnamese and escape HTML characters in key points
-                safe_point = encode_vietnamese(str(point))
-                tech += f"✓ {safe_point}\n"
-            
-            # Conflicting signals
-            conflicts = analysis.get('conflicting_signals', [])
-            if conflicts:
-                tech += "\n⚠️ <b>T&#237;n Hi&#7879;u M&#226;u Thu&#7849;n:</b>\n"
-                for conflict in conflicts:
-                    safe_conflict = encode_vietnamese(str(conflict))
-                    tech += f"• {safe_conflict}\n"
-            
-            # Warnings
+            sentiment = analysis.get('sentiment_analysis', {})
+            if sentiment:
+                tech += "📰 <b>TÂM LÝ & TIN TỨC:</b>\n"
+                tech += f"• Tin tức: {encode_vietnamese(sentiment.get('news_sentiment', ''))}\n"
+                tech += f"• Hype Mạng Xã Hội: {encode_vietnamese(sentiment.get('social_hype_level', ''))}\n"
+                tech += f"• Fear & Greed: {sentiment.get('fear_greed_index', 'N/A')} ({encode_vietnamese(sentiment.get('fear_greed_signal', ''))})\n"
+                if sentiment.get('latest_headline'):
+                    tech += f"• Tin HOT: {encode_vietnamese(sentiment.get('latest_headline'))}\n\n"
+
+            market_sent = analysis.get('market_sentiment', 'NEUTRAL')
+            sent_emoji = "🟢" if market_sent == "BULLISH" else "🔴" if market_sent == "BEARISH" else "🟡"
+            tech += f"💭 <b>Tổng Quan Thị Trường:</b> {sent_emoji} {encode_vietnamese(market_sent)}\n\n"
+
             warnings = analysis.get('warnings', [])
             if warnings:
-                tech += "\n🚨 <b>C&#7843;nh B&#225;o:</b>\n"
+                tech += "🚨 <b>CẢNH BÁO MỨC ĐỘ NGUY HIỂM:</b>\n"
                 for warning in warnings:
-                    safe_warning = encode_vietnamese(str(warning))
-                    tech += f"⚠️ {safe_warning}\n"
-            
-            # Historical Analysis
-            hist_analysis = analysis.get('historical_analysis', {})
-            if hist_analysis:
-                tech += "\n📊 <b>D&#7919; Li&#7879;u L&#7883;ch S&#7917;:</b>\n\n"
-                
-                # 1H Context
-                h1 = hist_analysis.get('h1_context', {})
-                if h1:
-                    tech += "⏰ <b>1H (7 ng&#224;y):</b>\n"
-                    if h1.get('rsi_interpretation'):
-                        tech += f"• RSI: {encode_vietnamese(h1['rsi_interpretation'])}\n"
-                    if h1.get('volume_trend'):
-                        tech += f"• Volume: {encode_vietnamese(h1['volume_trend'])}\n"
-                    if h1.get('price_position'):
-                        tech += f"• V&#7883; tr&#237;: {encode_vietnamese(h1['price_position'])}\n"
-                    if h1.get('institutional_insights'):
-                        tech += f"• Institutional: {encode_vietnamese(h1['institutional_insights'])}\n"
-                    tech += "\n"
-                
-                # 4H Context
-                h4 = hist_analysis.get('h4_context', {})
-                if h4:
-                    tech += "⏰ <b>4H (30 ng&#224;y):</b>\n"
-                    if h4.get('rsi_interpretation'):
-                        tech += f"• RSI: {encode_vietnamese(h4['rsi_interpretation'])}\n"
-                    if h4.get('volume_trend'):
-                        tech += f"• Volume: {encode_vietnamese(h4['volume_trend'])}\n"
-                    if h4.get('price_position'):
-                        tech += f"• V&#7883; tr&#237;: {encode_vietnamese(h4['price_position'])}\n"
-                    if h4.get('institutional_insights'):
-                        tech += f"• Institutional: {encode_vietnamese(h4['institutional_insights'])}\n"
-                    tech += "\n"
-                
-                # 1D Context
-                d1 = hist_analysis.get('d1_context', {})
-                if d1:
-                    tech += "⏰ <b>1D (90 ng&#224;y):</b>\n"
-                    if d1.get('rsi_mfi_correlation'):
-                        tech += f"• RSI/MFI: {encode_vietnamese(d1['rsi_mfi_correlation'])}\n"
-                    if d1.get('long_term_trend'):
-                        tech += f"• Xu h&#432;&#7899;ng: {encode_vietnamese(d1['long_term_trend'])}\n"
-                    if d1.get('volatility_assessment'):
-                        tech += f"• Bi&#7871;n &#273;&#7897;ng: {encode_vietnamese(d1['volatility_assessment'])}\n"
-                    if d1.get('institutional_insights'):
-                        tech += f"• Institutional: {encode_vietnamese(d1['institutional_insights'])}\n"
-            
-            tech += "\n<i>💡 Ph&#226;n t&#237;ch &#273;a khung th&#7901;i gian</i>"
-            
-            # Message 3: AI Reasoning
-            reasoning = "🧠 <b>PH&#194;N T&#205;CH CHI TI&#7870;T T&#7914; AI</b>\n\n"
+                    tech += f"⚠️ {encode_vietnamese(warning)}\n"
+
+            # --- Message 3: AI REASONING ---
+            reasoning = "🧠 <b>LẬP LUẬN TỪ AI DỰA TRÊN DỮ LIỆU</b>\n\n"
             reasoning += f"💎 <b>{symbol}</b>\n\n"
             reasoning += encode_vietnamese(analysis.get('reasoning_vietnamese', 'Không có phân tích chi tiết.'))
-            reasoning += f"\n\n⏰ <b>Th&#7901;i gian:</b> {analysis.get('analyzed_at', 'N/A')}\n"
-            reasoning += f"🤖 <b>Model:</b> Gemini 2.0 Flash\n\n"
-            reasoning += "<i>⚠️ &#272;&#226;y l&#224; ph&#226;n t&#237;ch AI, kh&#244;ng ph&#7843;i t&#432; v&#7845;n t&#224;i ch&#237;nh.\n"
-            reasoning += "Lu&#244;n DYOR (Do Your Own Research) tr&#432;&#7899;c khi &#273;&#7847;u t&#432;.</i>"
+            reasoning += "\n\n🎯 <b>Điểm Chính:</b>\n"
+            for point in analysis.get('key_points', []):
+                reasoning += f"✓ {encode_vietnamese(point)}\n"
+            reasoning += f"\n⏰ <b>Thời gian cập nhật:</b> {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            reasoning += "<i>⚠️ Đây là phân tích AI định lượng, không phải lời khuyên đầu tư.</i>"
             
-            # Return in proper order: technical details first, then summary, then reasoning
-            # This allows users to understand the analysis BEFORE seeing entry/TP/SL recommendations
-            # Store split_long_message function for external use
             self._split_message = split_long_message
-            
             return summary, tech, reasoning
             
         except Exception as e:
             logger.error(f"Error formatting response: {e}")
             error_msg = f"❌ Lỗi khi format kết quả AI analysis: {str(e)}"
+
             return error_msg, "", ""

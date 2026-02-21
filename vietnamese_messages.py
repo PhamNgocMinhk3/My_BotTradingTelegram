@@ -438,6 +438,329 @@ ERROR_INVALID_DATA = "❌ Dữ liệu không hợp lệ cho {}. Không thể ph�
 ERROR_SYMBOL_NOT_FOUND = "❌ Không tìm thấy {} trên Binance"
 ERROR_ANALYSIS_FAILED = "❌ Lỗi phân tích {}: {}"
 
+# GEMINI X2 Alert Message
+def get_stealth_accumulation_alert(symbol, price, volume_data, evidence, supply_shock_data=None, funding_rate=0, vol_ratio=1, vol_24h=0, vol_24h_usdt=0, price_change_24h=0, red_candles_6=0, update_count=0, changes=None, entry_zone=None, tp_sl_info=None):
+    """
+    Generate alert message for Stealth Accumulation with TP/SL
+    """
+    
+    # Extract score from evidence if possible (hacky but works without changing signature too much)
+    # Extract score from evidence if possible (hacky but works without changing signature too much)
+    score = 85 # Default
+    for item in evidence:
+        if "Điểm" in item:
+            try:
+                # "Gom Hàng Ẩn (Stealth): Điểm 85/100" -> extract 85
+                score = int(item.split("Điểm ")[1].split("/")[0])
+            except:
+                pass
+        elif "Score" in item: # Fallback for old English alerts
+            try:
+                score = int(item.split("Score ")[1].split("/")[0])
+            except:
+                pass
+    
+    # === SIGNAL RANKING SYSTEM ===
+    tier_points = 0
+    tier_reasons = []
+    
+    # Factor 1: Supply Shock (only count if buy side is strong)
+    if supply_shock_data and supply_shock_data.get('detected'):
+        cost = supply_shock_data.get('cost_to_push_5pct', 999999)
+        ss_ratio = supply_shock_data.get('ratio', 0)
+        if ss_ratio >= 1.0:  # Only count Supply Shock if buyers dominate
+            if cost < 50000:
+                tier_points += 3
+                tier_reasons.append(f"✅ Cạn Cung: ${cost/1000:.0f}K (Siêu rẻ!)")
+            elif cost < 100000:
+                tier_points += 2
+                tier_reasons.append(f"✅ Cạn Cung: ${cost/1000:.0f}K")
+        else:
+            tier_reasons.append(f"⚠️ Cạn Cung nhưng Phe Bán mạnh ({ss_ratio:.1f}x)")
+    
+    # Factor 2: Funding Rate
+    if funding_rate < -0.0001:
+        tier_points += 3
+        tier_reasons.append(f"✅ Funding: {funding_rate*100:.4f}% (Short Squeeze!)")
+    elif funding_rate < 0:
+        tier_points += 1
+        tier_reasons.append(f"✅ Funding Âm: {funding_rate*100:.4f}%")
+    elif funding_rate == 0:
+        tier_reasons.append("ℹ️ Funding Rate: N/A (Không có Futures)")
+    else:
+        tier_reasons.append(f"ℹ️ Funding Rate: +{funding_rate*100:.4f}% (Trung tính)")
+    
+    # Factor 3: Volume Ratio
+    if vol_ratio > 2.0:
+        tier_points += 2
+        tier_reasons.append(f"✅ Vol Ratio: {vol_ratio:.2f}x (Đột biến)")
+    elif vol_ratio > 1.5:
+        tier_points += 1
+        tier_reasons.append(f"✅ Vol Ratio: {vol_ratio:.2f}x")
+    
+    # Factor 4: Score
+    if score >= 90:
+        tier_points += 2
+    elif score >= 75:
+        tier_points += 1
+    
+    # Factor 5: Quality Gate — penalize weak internals
+    # Check key indicators from evidence strings
+    has_zero_vol = False
+    has_zero_obv = False
+    has_zero_rsi = False
+    has_zero_buy = False
+    
+    for item in evidence:
+        if "Dòng Vol Vào: 0.0/25" in item or "Dòng Vol Vào: 0/25" in item:
+            has_zero_vol = True
+        if "Dòng Tiền OBV: 0/25" in item:
+            has_zero_obv = True
+        if "Vùng RSI Gom: 0/10" in item:
+            has_zero_rsi = True
+        if "Áp Lực Mua: 0/10" in item:
+            has_zero_buy = True
+    
+    if has_zero_vol:
+        tier_points -= 2
+        tier_reasons.append("⚠️ Vol Vào: 0/25 (Không có dòng tiền)")
+    
+    if has_zero_obv:
+        tier_points -= 2  # Increased from -1: no hidden buying is a serious red flag
+        tier_reasons.append("⚠️ OBV: 0/25 (Không có mua ẩn!)")
+    
+    # COMBINED GATE: if BOTH OBV and Buy Pressure are zero — not real accumulation
+    if has_zero_obv and has_zero_buy:
+        tier_points -= 2  # Extra penalty: volume spike only, no actual accumulation evidence
+        tier_reasons.append("⚠️ Cảnh báo: Không có OBV & Áp Lực Mua — chỉ có Vol Spike!")
+    
+    if has_zero_rsi:
+        tier_points -= 1  # RSI outside accumulation zone
+    
+    if vol_ratio < 1.0:
+        tier_points -= 1
+        tier_reasons.append(f"⚠️ Vol Ratio: {vol_ratio:.2f}x (Volume giảm!)")
+    
+    # Factor 6: Price Trend Safety (NEW)
+    if price_change_24h < -2.0:
+        tier_points -= 1
+        tier_reasons.append(f"⚠️ Giá giảm 24h: {price_change_24h:.1f}%")
+        
+    if red_candles_6 >= 4: # 4/6 recent candles are RED
+        tier_points -= 2
+        tier_reasons.append(f"⚠️ Áp lực bán: {red_candles_6}/6 nến đỏ")
+    
+    # Determine Tier (Thresholds tuned to minimize false positives)
+    if tier_points >= 7:
+        tier_label = "🔥🔥🔥 ƯU TIÊN CAO — VÀO NGAY!"
+    else:
+        # THEO DÕI & KHẢ QUAN = too noisy OR not absolute enough.
+        # User requested to ONLY see ƯU TIÊN CAO.
+        # We return None so the message isn't sent to Telegram, 
+        # but the coin is still tracked internally in last_gemini_alerts.
+        return None
+    
+    # Entry Zone Formatting
+    entry_msg = ""
+    if entry_zone:
+        low, high = entry_zone
+        # Smart formatting for small numbers
+        if low < 1:
+            low_str = f"${low:.4f}"
+            high_str = f"${high:.4f}"
+        else:
+            low_str = f"${low:.2f}"
+            high_str = f"${high:.2f}"
+        
+        entry_msg = f"🎯 <b>Vùng Mua An Toàn:</b> {low_str} - {high_str}\n"
+
+    # Star rating
+    stars = "⭐⭐⭐"
+    if score >= 90: stars = "⭐⭐⭐⭐⭐ (SIÊU VIP)"
+    elif score >= 80: stars = "⭐⭐⭐⭐ (Rất Đẹp)"
+    
+    # === BUILD MESSAGE ===
+    if update_count > 0:
+        msg = f"🔄 <b>CẬP NHẬT TÍN HIỆU ({symbol}) - Lần {update_count}</b>\n\n"
+        msg += f"<b>{tier_label}</b>\n"
+    else:
+        msg = f"<b>{tier_label}</b>\n\n"
+        msg += f"💎 <b>PHÁT HIỆN GEMINI X2: {symbol}</b> 💎\n"
+    
+    msg += f"<b>Điểm số: {score}/100 {stars}</b>\n\n"
+    
+    # Show Changes — full Cũ → Mới comparison table
+    if update_count > 0 and changes:
+        msg += "<b>📊 SO SÁNH VỚI LẦN TRƯỚC:</b>\n"
+        
+        # Score: Cũ → Mới
+        prev_s = changes.get('prev_score', 0)
+        curr_s = changes.get('curr_score', prev_s)
+        delta_s = curr_s - prev_s
+        s_icon = "📈" if delta_s > 0 else "📉" if delta_s < 0 else "➡️"
+        msg += f"{s_icon} Điểm: {prev_s} → <b>{curr_s}</b> ({delta_s:+d})\n"
+        
+        # Price: Cũ → Mới
+        prev_p = changes.get('prev_price_abs', 0)
+        curr_p = changes.get('curr_price_abs', prev_p)
+        if prev_p > 0:
+            pct_p = changes.get('price_pct', 0)
+            p_icon = "🚀" if pct_p > 0 else "📉" if pct_p < 0 else "➡️"
+            # Smart price formatting
+            fmt = ".4f" if curr_p < 1 else ".3f" if curr_p < 10 else ".2f"
+            msg += f"{p_icon} Giá: ${prev_p:{fmt}} → <b>${curr_p:{fmt}}</b> ({pct_p:+.2f}%)\n"
+        
+        # Vol Ratio: Cũ → Mới
+        prev_vr = changes.get('prev_vol_ratio', 0)
+        curr_vr = changes.get('curr_vol_ratio', prev_vr)
+        delta_vr = curr_vr - prev_vr
+        vr_icon = "🌊" if delta_vr > 0.1 else "🔹" if delta_vr < -0.1 else "➡️"
+        msg += f"{vr_icon} Vol Ratio: {prev_vr:.2f}x → <b>{curr_vr:.2f}x</b> ({delta_vr:+.2f}x)\n"
+        
+        # Vol Coin: Cũ → Mới
+        prev_vc = changes.get('prev_vol_coin', 0)
+        curr_vc = changes.get('curr_vol_coin', prev_vc)
+        if prev_vc > 0:
+            vol_pct = changes.get('vol_pct', 0)
+            def _fmt_vol(v):
+                if v >= 1_000_000: return f"{v/1_000_000:.1f}M"
+                elif v >= 1000: return f"{v/1000:.0f}K"
+                return f"{v:.0f}"
+            v_icon = "📊" if vol_pct > 0 else "🔻"
+            msg += f"{v_icon} Vol Coin: {_fmt_vol(prev_vc)} → <b>{_fmt_vol(curr_vc)}</b> ({vol_pct:+.2f}%)\n"
+        
+        # Vol USDT: Cũ → Mới
+        prev_vu = changes.get('prev_vol_usdt', 0)
+        curr_vu = changes.get('curr_vol_usdt', prev_vu)
+        if prev_vu > 0:
+            usdt_pct = changes.get('vol_usdt_pct', 0)
+            def _fmt_usdt(v):
+                if v >= 1_000_000: return f"${v/1_000_000:.1f}M"
+                elif v >= 1000: return f"${v/1000:.0f}K"
+                return f"${v:.0f}"
+            u_icon = "💵" if usdt_pct > 0 else "🔻"
+            msg += f"{u_icon} Vol USDT: {_fmt_usdt(prev_vu)} → <b>{_fmt_usdt(curr_vu)}</b> ({usdt_pct:+.2f}%)\n"
+
+        # Funding: Cũ → Mới
+        prev_f = changes.get('prev_funding', 0)
+        curr_f = changes.get('curr_funding', prev_f)
+        delta_f = changes.get('funding_diff', 0)
+        if abs(delta_f) > 0.000001 or 'prev_funding' in changes:
+            f_icon = "⚡"
+            msg += f"{f_icon} Funding: {prev_f*100:.4f}% → <b>{curr_f*100:.4f}%</b> ({delta_f*100:+.4f}%)\n"
+             
+        msg += "\n"
+    
+    # --- TP/SL SECTION ---
+    if tp_sl_info:
+        rec = tp_sl_info.get('recommendation', 'TP NGẮN HẠN')
+        is_strong = tp_sl_info.get('is_strong', False)
+        tp1 = tp_sl_info.get('tp1', 0)
+        tp2 = tp_sl_info.get('tp2', 0)
+        sl = tp_sl_info.get('sl', 0)
+        
+        # Calculate percentages
+        try:
+            curr_price = float(price.replace(',',''))
+            tp1_pct = ((tp1 - curr_price) / curr_price) * 100
+            tp2_pct = ((tp2 - curr_price) / curr_price) * 100
+            sl_pct = ((sl - curr_price) / curr_price) * 100
+        except:
+            tp1_pct = 0
+            tp2_pct = 0
+            sl_pct = 0
+            
+        icon = "🚀" if is_strong else "🎯"
+        
+        msg += f"<b>{icon} KHUYẾN NGHỊ: {rec}</b>\n"
+        msg += f"• TP1: ${tp1:.4f} (+{tp1_pct:.1f}%)\n"
+        msg += f"• TP2: ${tp2:.4f} (+{tp2_pct:.1f}%)\n"
+        msg += f"🛑 SL: ${sl:.4f} ({sl_pct:.1f}%) (hoặc MFI &lt; 30)\n\n"
+
+    # Tier Reasons
+    if tier_reasons:
+        msg += "<b>📊 Yếu Tố Quyết Định:</b>\n"
+        if entry_msg:
+             msg += entry_msg
+             
+        for reason in tier_reasons:
+            msg += f"{reason.replace('<', '&lt;')}\n"
+        msg += "\n"
+    
+    # Extract Pump Time if available in evidence
+    pump_time = "Đang tính toán..."
+    for item in evidence:
+        if "Dự Kiến Pump:" in item:
+            pump_time = item.split("Dự Kiến Pump: ")[1]
+        elif "Estimated Pump:" in item: # Fallback
+            pump_time = item.split("Estimated Pump: ")[1]
+            
+    msg += f"⏳ <b>Sắp Pump: {pump_time}</b>\n"
+    msg += f"🕐 {datetime.now().strftime('%H:%M:%S')}\n\n"
+    
+    msg += "<b>🚀 TÍN HIỆU GOM HÀNG ẨN (Stealth Accumulation)</b>\n"
+    msg += "⚠️ <i>Tín hiệu này thường xuất hiện TRƯỚC khi pump mạnh</i>\n\n"
+    
+    # Price info
+    if price:
+        trend_icon = "🟢" if price_change_24h >= 0 else "🔴"
+        msg += f"💰 <b>Giá hiện tại:</b> ${price} ({trend_icon} {price_change_24h:+.2f}%)\n"
+    
+    # 24h Volume info
+    if vol_24h_usdt > 0:
+        if vol_24h_usdt >= 1_000_000:
+            vol_usdt_str = f"${vol_24h_usdt/1_000_000:.1f}M"
+        elif vol_24h_usdt >= 1000:
+            vol_usdt_str = f"${vol_24h_usdt/1000:.0f}K"
+        else:
+            vol_usdt_str = f"${vol_24h_usdt:.0f}"
+        
+        if vol_24h >= 1_000_000:
+            vol_coin_str = f"{vol_24h/1_000_000:.1f}M"
+        elif vol_24h >= 1000:
+            vol_coin_str = f"{vol_24h/1000:.0f}K"
+        else:
+            vol_coin_str = f"{vol_24h:.0f}"
+        
+        msg += f"📊 <b>Volume 24h:</b> {vol_usdt_str} ({vol_coin_str} coin)\n"
+    
+    # Supply Shock Info (New)
+    if supply_shock_data and supply_shock_data.get('detected'):
+        cost = supply_shock_data.get('cost_to_push_5pct', 0)
+        ratio = supply_shock_data.get('ratio', 0)
+        
+        msg += "\n<b>📉 CẠN CUNG (Supply Shock):</b>\n"
+        if cost > 0:
+            if cost >= 1000000:
+                cost_str = f"${cost/1000000:.1f}M"
+            else:
+                cost_str = f"${cost/1000:.0f}K"
+            msg += f"✅ <b>Siêu nhẹ tàu:</b> Chỉ cần {cost_str} để đẩy +5%\n"
+        
+        if ratio >= 1.0:
+            msg += f"✅ <b>Lực Mua/Bán:</b> {ratio:.1f}x (Phe mua áp đảo)\n"
+        else:
+            msg += f"⚠️ <b>Lực Mua/Bán:</b> {ratio:.1f}x (Phe bán áp đảo!)\n"
+    
+    # Evidence
+    msg += f"\n<b>🔍 Dấu hiệu nhận biết:</b>\n"
+    for item in evidence:
+        msg += f"• {item.replace('<', '&lt;')}\n"
+        
+    msg += "\n<b>📊 Phân tích Hành vi:</b>\n"
+    msg += "✅ Giá đi ngang (Nén chặt)\n"
+    msg += "✅ Volume mua chủ động tăng dần\n"
+    msg += "✅ Cá mập đang gom hàng khéo léo\n\n"
+    
+    msg += "<b>💡 Khuyến nghị:</b>\n"
+    msg += "• Canh mua ở vùng giá hiện tại\n"
+    msg += "• Stoploss: Dưới vùng SW hiện tại 3-5%\n"
+    msg += "• Target: x2 - x3 (Medium term)\n\n"
+    
+    msg += f"⚠️ <i>Luôn quản lý vốn cẩn thận!</i>"
+    
+    return msg
+
 # Success Messages
 SCAN_START = "🔍 <b>Đang quét {} coin...</b>\n\n⚡ Sử dụng {} luồng song song (tự động)\n📊 Sẽ phân tích và gửi TẤT CẢ coin (không chỉ tín hiệu)."
 SCAN_COMPLETE = "✅ <b>Quét Watchlist Hoàn tất!</b>"
@@ -561,5 +884,32 @@ def get_bot_detection_message(detection_result):
         msg += "   👤 Mẫu giao dịch tự nhiên/con người\n"
         msg += "   Hoạt động tự động thấp\n"
         msg += "   ✅ Điều kiện thị trường bình thường\n"
+    
+    return msg
+
+def get_trailing_stop_alert(symbol, price, drop_percent, signal_type, flow_ratio):
+    """
+    Generate trailing stop / dump alert message
+    """
+    if signal_type == "DUMP":
+        title = "🔴 CẢNH BÁO XẢ HÀNG (DUMP ALERT)"
+        action = "⚠️ KHUYẾN NGHỊ: CHỐT LỜI NGAY / CẮT LỖ"
+    else:
+        title = "📉 CẢNH BÁO ĐIỀU CHỈNH (PULLBACK)"
+        action = "💡 KHUYẾN NGHỊ: Theo dõi, có thể là nhịp nghỉ"
+        
+    msg = f"<b>{title}</b>\n\n"
+    msg += f"<b>💎 {symbol}</b>\n"
+    msg += f"💰 Giá hiện tại: ${price}\n"
+    msg += f"📉 Mức giảm từ đỉnh: -{drop_percent:.2f}%\n\n"
+    
+    msg += f"<b>📊 Phân tích Dòng tiền (1h):</b>\n"
+    if flow_ratio > 1.0:
+        msg += f"⚠️ Lực Bán > Lực Mua: {flow_ratio:.2f}x\n"
+    else:
+        msg += f"✅ Lực Mua > Lực Bán: {1/flow_ratio:.2f}x\n"
+        
+    msg += f"\n{action}\n"
+    msg += f"🕐 {datetime.now().strftime('%H:%M:%S')}"
     
     return msg

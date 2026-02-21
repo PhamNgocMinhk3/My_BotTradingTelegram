@@ -495,6 +495,43 @@ class TelegramBot:
                 self._bot_username = None
         return self._bot_username
     
+    def create_update_keyboard(self, symbol, webapp_url=None):
+        """
+        Create keyboard for update/priority alerts with explicit Update Context
+        
+        Args:
+            symbol: Trading symbol (e.g., BTCUSDT)
+            webapp_url: Optional URL for Telegram WebApp
+        """
+        import time
+        from chart_generator import get_tradingview_chart_url
+        
+        keyboard = types.InlineKeyboardMarkup(row_width=2)
+        
+        # WebApp Live Chart button (opens in Telegram)
+        if webapp_url:
+            cache_buster = int(time.time())
+            chart_webapp_url = f"{webapp_url}/webapp/chart.html?symbol={symbol}&timeframe=1h&_t={cache_buster}"
+            keyboard.row(
+                types.InlineKeyboardButton(
+                    "📊 Live Chart (Cập Nhật)", 
+                    web_app=types.WebAppInfo(url=chart_webapp_url)
+                )
+            )
+        
+        # TradingView fallback buttons
+        keyboard.row(
+            types.InlineKeyboardButton("📈 TradingView 1H", url=get_tradingview_chart_url(symbol, '60')),
+            types.InlineKeyboardButton("📈 TradingView 4H", url=get_tradingview_chart_url(symbol, '240'))
+        )
+        
+        # AI Analysis specifically for Updates (bypasses cache and compares old/new data)
+        keyboard.row(
+            types.InlineKeyboardButton("🤖 AI Phân Tích (Cập Nhật)", callback_data=f"ai_update_{symbol}")
+        )
+        
+        return keyboard
+        
     def create_chart_keyboard(self, symbol, webapp_url=None):
         """Create keyboard with Live Chart (WebApp) and timeframe options"""
         from chart_generator import get_tradingview_chart_url

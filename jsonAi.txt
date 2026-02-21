@@ -1,240 +1,197 @@
 prompt_template = """
-AI Response JSON Schema
-Version: 3.3 QUANT FUND EDITION + SENTIMENT INTEGRATION + PUBLIC
-DATA ACCESS + REAL-TIME INTEGRATION
-Model: Gemini 2.5 Pro (or compatible AI with web browsing capabilities)
+AI Response JSON Schema — Pump Detection Focus
+Version: 4.0 PUMP HUNTER EDITION
+Model: Gemini 2.5 Pro (with Google Search grounding)
 Format: JSON
-Fields: 40 total fields (31 original + 7 new sentiment fields + 1 new data sources field
-+ 1 new real-time timestamp field)
-Updated: November 20, 2025
-Maintained by: Wall Street Quant Fund Trading Team (Upgraded by Grok 4 for RealTime Data Integration and Public Accessibility)
-Upgrade Notes:
-- Added new top-level field "real_time_timestamp" to record when real-time data was
-fetched.
-- Updated descriptions in on_chain_data, sentiment_analysis, and other relevant
-fields to emphasize real-time fetching using browsing tools or APIs (no keys
-required).
-- Enhanced data_sources field to include fetched_at timestamps for each source.
-- Integrated real-time examples from fetched data (e.g., current Fear & Greed Index:
-11 - Extreme Fear; BTC price around $91,500 from recent X posts and news).
-- AI Instruction: Always fetch real-time data before generating response by browsing
-URLs or using search tools. Include the fetch timestamp and verify data recency.
-═══════════════════════════════════════════OVERVIEW - QUANT FUND EDITION + SENTIMENT INTEGRATION
+Fields: 15 focused fields (pump_validation + onchain + sentiment)
+Updated: February 2026
+
 ═══════════════════════════════════════════
-This document defines the complete JSON schema for the AI response from Gemini
-2.5 Pro when performing institutional-grade cryptocurrency trading analysis. The
-schema is designed for quantitative fund managers with Wall Street experience,
-integrating comprehensive on-chain data, professional risk management
-frameworks, institutional trading strategies, and multi-source sentiment analysis.
-NEW IN V3.1 SENTIMENT INTEGRATION EDITION:
-• 7 new sentiment fields (total 38 fields)
-• Multi-source sentiment data integration (X, Telegram, news platforms, Google
-Trends)
-• Fear & Greed Index integration with contrarian signals
-• Economic calendar risk assessment (ForexFactory, Investing.com)
-• Whale alert sentiment impact analysis
-• Sentiment divergence scoring (retail vs institutional)
-• Sentiment-based risk metrics and emergency protocols
-• Social media sentiment analytics with source weighting
-• News sentiment velocity analysis
-NEW IN V3.2 PUBLIC DATA ACCESS EDITION:
-• New "data_sources" field to document public URLs used.
-• Instructions in descriptions for AI to browse public dashboards for data.
-• No API keys required; focus on free, accessible metrics.
-NEW IN V3.3 REAL-TIME INTEGRATION EDITION:
-• New "real_time_timestamp" field for data fetch time.
-• Real-time fetching emphasized in descriptions with examples (e.g., current BTC
-price from news: ~$91,500; Fear & Greed: 11).• Enhanced data_sources with fetched_at for each entry.
-• AI must confirm data is current (within 24h) or note delays.
-═══════════════════════════════════════════
-Complete JSON Schema (40 Fields)
+JSON Schema
 ═══════════════════════════════════════════
 {
-"real_time_timestamp": {
-"type": "string",
-"description": "ISO 8601 timestamp when real-time data was fetched (e.g., '2025-
-11-20T12:00:00Z'). All dynamic fields based on this fetch time."
-},
-"recommendation": {
-"type": "string",
-"enum": ["BUY", "SELL", "HOLD", "WAIT"],
-"description": "Primary trading recommendation. BUY (long entry), SELL (short
-entry), HOLD (already in position), WAIT (insufficient confidence or conflicting
-signals)"
-},
-"confidence": {
-"type": "integer",
-"minimum": 0,
-"maximum": 100,
-"description": "Confidence score as percentage (0-100). 0=no confidence,
-100=absolute certainty. Institutional grade: 70+ for BUY/SELL, <40 for WAIT.
-Adjusted based on real-time data freshness."},
-"trading_style": {
-"type": "string",
-"enum": ["scalping", "swing", "position", "arbitrage"],
-"description": "Trading style for which this analysis was optimized. Scalping
-(minutes-hours), Swing (days), Position (weeks+), Arbitrage (statistical
-opportunities)"
-},
-"entry_point": {
-"type": "number",
-"description": "Recommended entry price in USD. Should be specific, not a range.
-Based on current price, nearest support (buy) or resistance (sell), and institutional
-zones with statistical edge. Use real-time price from sources like CoinGlass."
-},
-"stop_loss": {
-"type": "number",
-"description": "Stop loss price in USD. For BUY: below support zone (typically -2-
-5% from entry). For SELL: above resistance zone (typically +2-5% from entry).
-Respects institutional risk management (max 2% account risk)"
-},
-"take_profit": {
-"type": "array", "items": {"type": "number"},
-"minItems": 1,
-"maxItems": 5,
-"description": "Array of take profit targets in USD (usually 3 targets). TP1 (quick 5-
-10%), TP2 (medium 15-25%), TP3 (extended 30-50%). Institutional standard: 1:2:3
-risk/reward ratio minimum"
-},"expected_holding_period": {
-"type": "string",
-"pattern": "^[0-9]+ (minute|hour|day|week)s?$",
-"description": "Expected holding time for this trade. Examples: '5 minutes', '2
-hours', '3 days', '1 week'. Scalping = minutes-hours, Swing = days, Position =
-weeks+"
-},
-"risk_level": {
-"type": "string",
-"enum": ["LOW", "MEDIUM", "HIGH"],
-"description": "Risk assessment. LOW: <1% drawdown risk, MEDIUM: 1-3%,
-HIGH: 3-5%+. Based on volatility, position sizing, and institutional risk metrics,
-including real-time volatility from sources like Kaiko."
-},
-"reasoning_vietnamese": {
-"type": "string",
-"minLength": 300,
-"maxLength": 500,
-"description": "Detailed analysis explanation in Vietnamese (300-500 words).
-Must explain:\n- Why this recommendation\n- Which indicators led to this
-conclusion\n- Key support/resistance levels\n- Risk/reward ratio\n- Market condition
-context\n- Any warnings or cautions. Incorporate real-time data like current BTC
-price (~$91,500)."
-},
-"key_points": {
-"type": "array",
-"items": {"type": "string"},
-"minItems": 3,"maxItems": 8,
-"description": "Critical bullet points supporting the recommendation. Each point
-should be one sentence and actionable with institutional context, referencing realtime metrics (e.g., 'Extreme Fear in Fear & Greed Index at 11 suggests contrarian
-buy')."
-},
-"conflicting_signals": {
-"type": "array",
-"items": {"type": "string"},
-"description": "Array of signals that contradict the main recommendation. Empty
-array if none. Used to warn traders and lower confidence if many conflicts, including
-real-time divergences."
-},
-"warnings": {
-"type": "array",
-"items": {"type": "string"},
-"description": "Critical warnings for the trader. Examples: 'High volatility expected',
-'Major resistance near TP3', 'Pump signal detected - high dump risk', 'Low liquidity
-on tighter timeframes'. Include real-time warnings like 'Recent $1T market wipeout
-increases risk'."
-},
-"market_sentiment": {
-"type": "string",
-"enum": ["BULLISH", "BEARISH", "NEUTRAL"],
-"description": "Overall market sentiment for this symbol. Based on volume profile
-position, smart money bias, and trend direction with institutional confirmation, crossverified with real-time sentiment data."
-},"technical_score": {
-"type": "integer",
-"minimum": 0,
-"maximum": 100,
-"description": "Technical analysis score (0-100). Calculated as weighted sum of
-institutional indicators with statistical significance, updated with real-time klines."
-},
-"fundamental_score": {
-"type": "integer",
-"minimum": 0,
-"maximum": 100,
-"description": "Fundamental score (0-100). Based on institutional flows, liquidity,
-and market sentiment with on-chain data validation, using real-time TVL and
-revenue."
-},
-// ... (Other fields from v3.2 remain the same, but update descriptions where
-relevant to include real-time aspects)
-"on_chain_data": {
-"type": "object",
-"description": "Comprehensive on-chain data integration from multiple
-institutional-grade sources. AI Instruction: Fetch real-time data by browsing public
-URLs like https://studio.glassnode.com/metrics, https://www.coinglass.com/, etc., as
-detailed in prompt sections 0.5. Example: Current funding rate from CoinGlass (realtime), TVL change -1.41% from DeFiLlama.",
-"properties": {
-// ... (Sub-properties remain, but add real-time notes in descriptions)
-"glassnode_metrics": {
-"type": "object","description": "Glassnode institutional flow metrics - primary BTC direction
-indicator (Public URL: https://studio.glassnode.com/metrics - Browse for real-time
-flows; e.g., latest net flows)."
-// ...
-},
-// Similar updates for others
-}
-},
-// ... (Similar updates for historical_analysis, risk_metrics, etc.)
-"sentiment_analysis": {
-"type": "object",
-"description": "Comprehensive multi-source sentiment analysis - institutional
-grade. AI Instruction: Fetch real-time data from public URLs in prompt section 1.6,
-e.g., https://alternative.me/crypto/fear-and-greed-index/ for Fear & Greed (current:
-11), https://x.com/ for social sentiment (recent BTC price ~$91,500).",
-"properties": {
-// ... (Sub-properties remain, update descriptions)
-"fear_greed_index": {
-"type": "object",
-"description": "Fear & Greed Index analysis with contrarian signals (Public
-URL: https://alternative.me/crypto/fear-and-greed-index/ - Real-time daily update;
-e.g., current 11 - Extreme Fear)."
-// ...
-},
-// Similar for news_sentiment (integrate latest news like $1T wipeout)
-}
-},
-// ... (sentiment_risk_score updated with real-time risks)"data_sources": {
-"type": "object",
-"description": "List of public data sources and URLs used in this analysis for
-transparency and replication. No API keys required. Include real-time fetch
-timestamps.",
-"properties": {
-"on_chain_sources": {
-"type": "array",
-"items": {
-"type": "object",
-"properties": {
-"url": {"type": "string"},
-"fetched_at": {"type": "string", "description": "ISO timestamp when fetched"}
-}
-},
-"description": "Public URLs for on-chain data with fetch times. Example: [{'url':
-'https://www.coinglass.com/', 'fetched_at': '2025-11-20T12:00:00Z'}]"
-},
-"sentiment_sources": {
-"type": "array",
-"items": {
-"type": "object",
-"properties": {
-"url": {"type": "string"},
-"fetched_at": {"type": "string"}
-}
-},
-"description": "Public URLs for sentiment data with fetch times."
-},"fetched_metrics": {
-"type": "array",
-"items": {"type": "string"},
-"description": "Key metrics fetched from sources. Example: ['BTC price
-~$91,500 from X posts', 'Fear & Greed Index: 11']"
-}
-}
-}
+  "recommendation": {
+    "type": "string",
+    "enum": ["BUY", "SELL", "HOLD", "WAIT"],
+    "description": "Primary recommendation based on pump analysis + on-chain + sentiment"
+  },
+  "confidence": {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Confidence score. 80+: Strong signal. 60-79: Moderate. <60: Weak/conflicting"
+  },
+  "entry_point": {
+    "type": "number",
+    "description": "Recommended entry price in USD"
+  },
+  "stop_loss": {
+    "type": "number",
+    "description": "Stop loss price. 3-5% below entry for small caps, 2-3% for large caps"
+  },
+  "take_profit": {
+    "type": "array",
+    "items": {"type": "number"},
+    "minItems": 2,
+    "maxItems": 3,
+    "description": "Take profit targets: TP1 (conservative 5-10%), TP2 (moderate 15-25%), TP3 (aggressive 30-50%)"
+  },
+  "risk_level": {
+    "type": "string",
+    "enum": ["LOW", "MEDIUM", "HIGH"],
+    "description": "Risk assessment based on dump risk, liquidity, and market conditions"
+  },
+  "reasoning_vietnamese": {
+    "type": "string",
+    "minLength": 300,
+    "maxLength": 500,
+    "description": "Detailed analysis in Vietnamese. Must cover: pump validation, on-chain evidence, news impact, entry/exit reasoning, dump risk"
+  },
+
+  "pump_validation": {
+    "type": "object",
+    "description": "AI validation of bot's pump detection signal",
+    "properties": {
+      "agrees_with_bot": {
+        "type": "boolean",
+        "description": "Does AI agree with bot's pump detection? true/false"
+      },
+      "ai_pump_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "AI's independent pump likelihood score based on external data"
+      },
+      "pump_type": {
+        "type": "string",
+        "enum": ["STEALTH_ACCUMULATION", "WHALE_PUSH", "RETAIL_FOMO", "FAKE_PUMP", "ORGANIC_GROWTH", "NONE"],
+        "description": "Type of pump detected. STEALTH=hidden buying, WHALE_PUSH=big player, RETAIL_FOMO=hype-driven, FAKE_PUMP=wash/manipulation"
+      },
+      "pump_phase": {
+        "type": "string",
+        "enum": ["PRE_PUMP", "EARLY_PUMP", "MID_PUMP", "LATE_PUMP", "NO_PUMP"],
+        "description": "Current phase in pump cycle. PRE=best entry, EARLY=good, MID=risky, LATE=do not enter"
+      },
+      "estimated_pump_time": {
+        "type": "string",
+        "description": "Estimated time to pump peak: '1-4h', '4-12h', '12-24h', '24-48h', 'Already peaked', 'None'"
+      },
+      "dump_risk_score": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Dump risk score. >50: HIGH risk. Factors: token unlock, whale selling, extreme hype, high funding"
+      },
+      "reasoning": {
+        "type": "string",
+        "description": "Detailed pump validation reasoning in Vietnamese"
+      }
+    }
+  },
+
+  "onchain_analysis": {
+    "type": "object",
+    "description": "On-chain and derivatives data from Google Search",
+    "properties": {
+      "whale_activity": {
+        "type": "string",
+        "enum": ["ACCUMULATING", "DISTRIBUTING", "NEUTRAL", "UNKNOWN"],
+        "description": "Whale behavior based on large transfers and wallet tracking"
+      },
+      "exchange_flow": {
+        "type": "string",
+        "enum": ["NET_INFLOW", "NET_OUTFLOW", "NEUTRAL", "UNKNOWN"],
+        "description": "Net exchange flow direction. OUTFLOW=bullish (accumulation), INFLOW=bearish (distribution)"
+      },
+      "large_transfers_detected": {
+        "type": "boolean",
+        "description": "True if large on-chain transfers (>$1M) detected recently"
+      },
+      "funding_rate_signal": {
+        "type": "string",
+        "enum": ["SHORT_SQUEEZE_POTENTIAL", "NEUTRAL", "OVERHEATED_LONGS", "LONG_SQUEEZE_RISK", "UNKNOWN"],
+        "description": "Funding rate interpretation. Negative=short squeeze potential, >0.1%=longs overheated"
+      },
+      "open_interest_trend": {
+        "type": "string",
+        "enum": ["INCREASING", "STABLE", "DECREASING", "UNKNOWN"],
+        "description": "Open interest trend direction"
+      },
+      "liquidation_risk": {
+        "type": "string",
+        "enum": ["HIGH", "MODERATE", "LOW", "UNKNOWN"],
+        "description": "Risk of liquidation cascade based on leverage and OI"
+      },
+      "smart_money_direction": {
+        "type": "string",
+        "enum": ["BUYING", "SELLING", "NEUTRAL", "UNKNOWN"],
+        "description": "Smart money wallet direction from Nansen/Arkham data"
+      },
+      "token_unlock_risk": {
+        "type": "string",
+        "enum": ["HIGH", "MODERATE", "LOW", "NONE", "UNKNOWN"],
+        "description": "Risk from upcoming token unlocks within 30 days"
+      }
+    }
+  },
+
+  "sentiment_analysis": {
+    "type": "object",
+    "description": "News and social sentiment from Google Search",
+    "properties": {
+      "news_sentiment": {
+        "type": "string",
+        "enum": ["VERY_POSITIVE", "POSITIVE", "NEUTRAL", "NEGATIVE", "VERY_NEGATIVE"],
+        "description": "Overall news sentiment for this coin"
+      },
+      "latest_headline": {
+        "type": "string",
+        "description": "Most relevant recent headline about this coin (Vietnamese translation)"
+      },
+      "social_hype_level": {
+        "type": "string",
+        "enum": ["EXTREME", "HIGH", "MODERATE", "LOW", "NONE"],
+        "description": "Social media hype level. EXTREME=likely near top, LOW+pump signal=stealth accumulation"
+      },
+      "fear_greed_index": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Current crypto Fear & Greed Index value"
+      },
+      "fear_greed_signal": {
+        "type": "string",
+        "enum": ["EXTREME_FEAR_BUY", "FEAR", "NEUTRAL", "GREED", "EXTREME_GREED_SELL"],
+        "description": "Trading signal from Fear & Greed. <20: contrarian buy, >80: contrarian sell"
+      },
+      "upcoming_catalyst": {
+        "type": ["string", "null"],
+        "description": "Any upcoming catalyst (listing, upgrade, partnership) or null if none"
+      },
+      "btc_impact": {
+        "type": "string",
+        "enum": ["BULLISH_SUPPORT", "NEUTRAL", "BEARISH_DRAG", "UNKNOWN"],
+        "description": "BTC's current impact on this altcoin"
+      }
+    }
+  },
+
+  "key_points": {
+    "type": "array",
+    "items": {"type": "string"},
+    "minItems": 3,
+    "maxItems": 6,
+    "description": "Key analysis points in Vietnamese. Focus on pump evidence, on-chain signals, and risk factors"
+  },
+  "warnings": {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": "Risk warnings in Vietnamese. Include dump risk, manipulation signs, liquidity concerns"
+  },
+  "market_sentiment": {
+    "type": "string",
+    "enum": ["BULLISH", "BEARISH", "NEUTRAL"],
+    "description": "Overall market sentiment for this coin based on all analysis"
+  }
 }
 """

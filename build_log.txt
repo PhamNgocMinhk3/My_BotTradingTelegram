@@ -1,0 +1,158 @@
+286 INFO: PyInstaller: 6.18.0, contrib hooks: 2026.0
+286 INFO: Python: 3.14.2
+330 INFO: Platform: Windows-10-10.0.19044-SP0
+330 INFO: Python environment: C:\Python314
+330 INFO: wrote D:\BOT COIN\rsi-mfi-trading-bot\TradingBot_GeminiX2.spec
+333 INFO: Removing temporary files and cleaning cache in C:\Users\Hieu Huynh\AppData\Local\pyinstaller
+350 WARNING: collect_data_files - skipping data collection for module 'babel' as it is not a package.
+351 WARNING: collect_dynamic_libs - skipping library collection for module 'babel' as it is not a package.
+895 INFO: Module search paths (PYTHONPATH):
+['D:\\BOT COIN\\rsi-mfi-trading-bot',
+ 'C:\\Python314\\python314.zip',
+ 'C:\\Python314\\DLLs',
+ 'C:\\Python314\\Lib',
+ 'C:\\Python314',
+ 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages',
+ 'C:\\Python314\\Lib\\site-packages',
+ 'D:\\BOT COIN\\rsi-mfi-trading-bot']
+1457 INFO: Appending 'datas' from .spec
+1458 INFO: checking Analysis
+1458 INFO: Building Analysis because Analysis-00.toc is non existent
+1459 INFO: Looking for Python shared library...
+1459 INFO: Using Python shared library: C:\Python314\python314.dll
+1459 INFO: Running Analysis Analysis-00.toc
+1459 INFO: Target bytecode optimization level: 0
+1459 INFO: Initializing module dependency graph...
+1460 INFO: Initializing module graph hook caches...
+1475 INFO: Analyzing modules for base_library.zip ...
+3236 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+3663 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+6669 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+6990 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+8982 INFO: Caching module dependency graph...
+9016 INFO: Analyzing D:\BOT COIN\rsi-mfi-trading-bot\main.py
+9156 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+9419 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+9882 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+9889 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+10391 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+10393 INFO: SetuptoolsInfo: initializing cached setuptools info...
+12065 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+13275 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13276 INFO: Setuptools: 'backports' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.backports'!
+13285 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+13306 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13368 INFO: Processing pre-safe-import-module hook 'hook-jaraco.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13369 INFO: Setuptools: 'jaraco' appears to be a full setuptools-vendored copy - creating alias to 'setuptools._vendor.jaraco'!
+13383 INFO: Processing pre-safe-import-module hook 'hook-more_itertools.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13384 INFO: Setuptools: 'more_itertools' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.more_itertools'!
+13686 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+13994 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+13996 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14235 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14274 INFO: Processing standard module hook 'hook-importlib_metadata.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+14315 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14744 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+14745 INFO: Setuptools: 'tomli' appears to be a setuptools-vendored copy - creating alias to 'setuptools._vendor.tomli'!
+15495 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+16531 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+17036 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+17220 INFO: Processing standard module hook 'hook-cryptography.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+18808 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+19348 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+19522 INFO: Processing standard module hook 'hook-Crypto.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+20457 INFO: Processing standard module hook 'hook-pycparser.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+22745 INFO: Processing standard module hook 'hook-dateparser.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+22933 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+23498 INFO: Processing standard module hook 'hook-regex.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+23753 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+23877 INFO: Processing standard module hook 'hook-dateparser.utils.strptime.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24657 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+24997 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+25333 INFO: Processing standard module hook 'hook-websockets.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+27068 INFO: Processing standard module hook 'hook-pandas.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+28811 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+34007 INFO: Processing standard module hook 'hook-pandas.io.formats.style.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+37472 INFO: Processing standard module hook 'hook-pandas.plotting.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+37570 INFO: Processing standard module hook 'hook-matplotlib.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+38201 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+38666 INFO: Processing standard module hook 'hook-matplotlib.backend_bases.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+38872 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+39034 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+39613 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+39888 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+41359 INFO: Processing standard module hook 'hook-jinja2.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+42277 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+42456 INFO: Processing standard module hook 'hook-matplotlib.pyplot.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+48331 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+48770 INFO: Processing standard module hook 'hook-pandas.io.clipboard.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+48961 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+51292 INFO: Processing standard module hook 'hook-google.api_core.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+52093 INFO: Processing standard module hook 'hook-grpc.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+55803 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+C:\Users\Hieu Huynh\AppData\Roaming\Python\Python314\site-packages\PyInstaller\utils\hooks\__init__.py:665: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+  __import__(name)
+58616 INFO: Processing standard module hook 'hook-httplib2.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+58766 INFO: Processing standard module hook 'hook-googleapiclient.model.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+59559 INFO: Processing standard module hook 'hook-psycopg2.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+59814 INFO: Analyzing hidden import 'babel.numbers'
+59814 ERROR: Hidden import 'babel.numbers' not found
+59814 INFO: Processing module hooks (post-graph stage)...
+60337 WARNING: Hidden import "mx.DateTime" not found!
+60337 WARNING: Hidden import "pycparser.lextab" not found!
+60337 WARNING: Hidden import "pycparser.yacctab" not found!
+60879 INFO: Processing standard module hook 'hook-matplotlib.backends.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+60880 INFO: Matplotlib backend selection method: automatic discovery of used backends
+60906 INFO: Discovered Matplotlib backend(s) via `matplotlib.use()` call in module 'chart_generator': ['Agg']
+60907 INFO: The following Matplotlib backends were discovered by scanning for `matplotlib.use()` calls: ['Agg']. If your backend of choice is not in this list, either add a `matplotlib.use()` call to your code, or configure the backend collection via hook options (see: https://pyinstaller.org/en/stable/hooks-config.html#matplotlib-hooks).
+60907 INFO: Selected matplotlib backends: ['Agg']
+61623 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+61775 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+62450 INFO: Performing binary vs. data reclassification (2090 entries)
+62644 INFO: Looking for ctypes DLLs
+62766 INFO: Analyzing run-time hooks ...
+62779 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+62782 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+62785 INFO: Including run-time hook 'pyi_rth_mplconfig.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+62786 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+62789 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks'
+62804 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+62810 INFO: Including run-time hook 'pyi_rth_cryptography_openssl.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+62812 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\PyInstaller\\hooks\\rthooks'
+62918 INFO: Creating base_library.zip...
+62943 INFO: Looking for dynamic libraries
+C:\Users\Hieu Huynh\AppData\Roaming\Python\Python314\site-packages\PyInstaller\building\build_main.py:227: FutureWarning: 
+
+All support for the `google.generativeai` package has ended. It will no longer be receiving 
+updates or bug fixes. Please switch to the `google.genai` package as soon as possible.
+See README for more details:
+
+https://github.com/google-gemini/deprecated-generative-ai-python/blob/main/README.md
+
+  __import__(package)
+C:\Users\Hieu Huynh\AppData\Roaming\Python\Python314\site-packages\PyInstaller\building\build_main.py:227: UserWarning: Core Pydantic V1 functionality isn't compatible with Python 3.14 or greater.
+  __import__(package)
+66182 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\pandas.libs', 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\numpy.libs', 'C:\\Users\\Hieu Huynh\\AppData\\Roaming\\Python\\Python314\\site-packages\\psycopg2_binary.libs']
+66183 INFO: Extra DLL search directories (PATH): []
+67308 INFO: Warnings written to D:\BOT COIN\rsi-mfi-trading-bot\build\TradingBot_GeminiX2\warn-TradingBot_GeminiX2.txt
+67558 INFO: Graph cross-reference written to D:\BOT COIN\rsi-mfi-trading-bot\build\TradingBot_GeminiX2\xref-TradingBot_GeminiX2.html
+67672 INFO: checking PYZ
+67672 INFO: Building PYZ because PYZ-00.toc is non existent
+67672 INFO: Building PYZ (ZlibArchive) D:\BOT COIN\rsi-mfi-trading-bot\build\TradingBot_GeminiX2\PYZ-00.pyz
+69248 INFO: Building PYZ (ZlibArchive) D:\BOT COIN\rsi-mfi-trading-bot\build\TradingBot_GeminiX2\PYZ-00.pyz completed successfully.
+69416 INFO: checking PKG
+69417 INFO: Building PKG because PKG-00.toc is non existent
+69417 INFO: Building PKG (CArchive) TradingBot_GeminiX2.pkg
+78319 INFO: Building PKG (CArchive) TradingBot_GeminiX2.pkg completed successfully.
+78370 INFO: Bootloader C:\Users\Hieu Huynh\AppData\Roaming\Python\Python314\site-packages\PyInstaller\bootloader\Windows-64bit-intel\run.exe
+78370 INFO: checking EXE
+78371 INFO: Building EXE because EXE-00.toc is non existent
+78371 INFO: Building EXE from EXE-00.toc
+78371 INFO: Copying bootloader EXE to D:\BOT COIN\rsi-mfi-trading-bot\dist\TradingBot_GeminiX2.exe
+78381 INFO: Copying icon to EXE
+78387 INFO: Copying 0 resources to EXE
+78388 INFO: Embedding manifest in EXE
+78393 INFO: Appending PKG archive to EXE
+78492 INFO: Fixing EXE headers
+79195 INFO: Building EXE from EXE-00.toc completed successfully.
+79252 INFO: Build complete! The results are available in: D:\BOT COIN\rsi-mfi-trading-bot\dist

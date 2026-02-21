@@ -1,0 +1,21 @@
+{
+  "symbols": [
+    "USDCUSDT",
+    "BARUSDT"
+  ],
+  "details": {
+    "USDCUSDT": {
+      "price": 1.0007,
+      "score": 78,
+      "time": 1770973073.985793,
+      "entry_time_str": "15:57:53"
+    },
+    "BARUSDT": {
+      "price": 0.489,
+      "score": 78,
+      "time": 1770973077.039911,
+      "entry_time_str": "15:57:57"
+    }
+  },
+  "updated_at": "2026-02-13T15:57:57.039927"
+}

@@ -19,9 +19,13 @@ Date: November 20, 2025
 import logging
 import time
 import threading
+import os
+import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import pandas as pd
+from vietnamese_messages import get_stealth_accumulation_alert, get_trailing_stop_alert
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,16 @@ class RealtimePumpDetector:
         self.layer2_interval = 180  # 3 minutes (1h/4h confirmation)
         self.layer3_interval = 300  # 5 minutes (1D trend)
         self.quick_scan_interval = 30  # 30 seconds for top volume coins
+        self.priority_rescan_interval = 120  # 2 minutes for tracked coins
         
+        # Tracking for deduplication
+        self.detected_pumps = {} 
+        self.last_alerts = {}
+        self.history_file = 'alerts_history.json'
+        self.last_gemini_alerts = self._load_history() # {symbol: {'time': ts, 'score': score}}
+        self.top_volume_cache = []
+        self.top_volume_cache_time = 0
+
         # Detection thresholds
         self.volume_spike_threshold = 3.0  # 3x average volume
         self.trade_spike_threshold = 3.0   # 3x average trades
@@ -79,26 +92,80 @@ class RealtimePumpDetector:
         self.final_threshold = 80   # 80% combined score to alert
         
         # Auto-save to watchlist settings
-        self.auto_save_threshold = 80  # Auto-save coins with score >= 80%
+        self.auto_save_threshold = 75  # Auto-save coins with score >= 75%
         self.max_watchlist_size = 20   # Max coins to keep in watchlist
         
         # Alert cooldown (prevent spam)
         self.alert_cooldown = 600  # 10 minutes (reduced from 30)
         self.instant_alert_threshold = 90  # Score >= 90% bypasses cooldown
-        self.last_alerts = {}  # {symbol: timestamp}
         
-        # Tracking
+        # Runtime control
         self.running = False
-        self.thread = None
-        self.detected_pumps = {}  # {symbol: detection_data}
-        self.top_volume_cache = []  # Cache for top volume coins
-        self.top_volume_cache_time = 0  # Last update time
+        self.threads = []
         
-        logger.info(f"✅ Realtime pump detector v3.0 initialized with Advanced Detection")
-        logger.info(f"  • Layer1: {self.layer1_interval}s (full scan)")
-        logger.info(f"  • Layer2: {self.layer2_interval}s (confirmation + ADVANCED)")
-        logger.info(f"  • Layer3: {self.layer3_interval}s (long-term)")
-        logger.info(f"  • Quick Scan: {self.quick_scan_interval}s (top {self.quick_scan_top_n} coins)")
+    def _load_history(self):
+        """Load alert history from file"""
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.error(f"Error loading alert history: {e}")
+        return {}
+
+    def _save_history(self):
+        """Save alert history to file"""
+        try:
+            with open(self.history_file, 'w') as f:
+                json.dump(self.last_gemini_alerts, f)
+        except Exception as e:
+            logger.error(f"Error saving alert history: {e}")
+                    
+
+
+    def start(self):
+        """Start the pump detector"""
+        if self.running:
+            return
+            
+        self.running = True
+        logger.info("🚀 Realtime Pump Detector STARTED")
+        
+        # Start scanning threads
+        t1 = threading.Thread(target=self._run_layer1_scan)
+        t2 = threading.Thread(target=self._run_pre_pump_scan)
+        
+        t1.daemon = True
+        t2.daemon = True
+        
+        t1.start()
+        t2.start()
+        
+        self.threads.extend([t1, t2])
+
+    def stop(self):
+        """Stop the pump detector"""
+        self.running = False
+        logger.info("🛑 Realtime Pump Detector STOPPED")
+        
+    def _run_layer1_scan(self):
+        while self.running:
+            try:
+                self._scan_layer1()
+                # Run quick scan if enabled
+                if self.quick_scan_enabled:
+                    self._quick_scan()
+            except Exception as e:
+                logger.error(f"Layer 1 Scan Error: {e}")
+            time.sleep(self.layer1_interval)
+
+    def _run_pre_pump_scan(self):
+        while self.running:
+            try:
+                self._scan_pre_pump()
+            except Exception as e:
+                logger.error(f"Pre-Pump Scan Error: {e}")
+            time.sleep(self.layer3_interval)  # Using Layer 3 interval (5m) for pre-pump
     
     def start(self):
         """Start real-time pump monitoring"""
@@ -132,6 +199,7 @@ class RealtimePumpDetector:
         last_layer1_scan = 0
         last_layer2_scan = 0
         last_layer3_scan = 0
+        last_priority_rescan = 0
         
         while self.running:
             try:
@@ -142,6 +210,13 @@ class RealtimePumpDetector:
                     logger.info("⚡ Quick Scan: Checking top volume coins (30s)...")
                     self._quick_scan_top_volume()
                     last_quick_scan = current_time
+                
+                # PRIORITY RE-SCAN: Fast re-check of tracked coins (every 2 min)
+                if current_time - last_priority_rescan >= self.priority_rescan_interval:
+                    if self.last_gemini_alerts:
+                        logger.info(f"🔄 Priority Re-scan: {len(self.last_gemini_alerts)} tracked coins...")
+                        self._priority_rescan_tracked()
+                    last_priority_rescan = current_time
                 
                 # Layer 1: Fast detection (every 1 minute)
                 if current_time - last_layer1_scan >= self.layer1_interval:
@@ -155,10 +230,17 @@ class RealtimePumpDetector:
                     self._scan_layer2()
                     last_layer2_scan = current_time
                 
-                # Layer 3: Long-term trend (every 5 minutes)
+                # Layer 3: Long-term trend & Volatility (every 5 minutes)
                 if current_time - last_layer3_scan >= self.layer3_interval:
-                    logger.info("🔍 Layer 3: Analyzing long-term trends (1D)...")
+                    logger.info("🔍 Layer 3: Analyzing long-term trends & Volatility (1D)...")
                     self._scan_layer3()
+                    
+                    # Run Pre-Pump Scan alongside Layer 3 (every 5 mins)
+                    self._scan_pre_pump()
+                    
+                    # RUN NEW VOLATILITY SCAN
+                    self._scan_volatility()
+                    
                     last_layer3_scan = current_time
                 
                 # Sleep 10 seconds between checks (reduced from 30)
@@ -169,6 +251,61 @@ class RealtimePumpDetector:
                 time.sleep(60)
         
         logger.info("Pump detector monitoring loop stopped")
+
+    def _scan_volatility(self):
+        """
+        LAYER 3+: VOLATILITY SCANNER
+        Detects coins with high 24h volatility (> 15%) and auto-adds them to watchlist.
+        """
+        try:
+            # Get 24h ticker for all symbols
+            tickers = self.binance.client.get_ticker()
+            
+            logger.info("🔥 Volatility Scan: Checking for Top Gainers...")
+            
+            count = 0
+            for t in tickers:
+                symbol = t['symbol']
+                
+                # Filter for USDT only
+                if not symbol.endswith('USDT'):
+                    continue
+                    
+                # Skip excluded coins (Bear/BULL/etc)
+                if any(k in symbol for k in ['BEAR', 'BULL', 'DOWN', 'UP']):
+                    continue
+                
+                try:
+                    price_change = float(t['priceChangePercent'])
+                    volume = float(t['quoteVolume'])
+                    last_price = float(t['lastPrice'])
+                    
+                    # CRITERIA: > 15% Gain AND > 1M Volume (Liquid coins only)
+                    if price_change >= 15.0 and volume >= 1000000:
+                        # Check if already in watchlist
+                        if self.watchlist and symbol not in self.watchlist.get_all():
+                            success, msg = self.watchlist.add(symbol, price=last_price, score=80) # High score for visibility
+                            if success:
+                                logger.info(f"🔥 Auto-added {symbol} (High Volatility: +{price_change:.2f}%)")
+                                
+                                # Verification alert
+                                alert_msg = (
+                                    f"🔥 <b>HIGH VOLATILITY: {symbol} (+{price_change:.2f}%)</b>\n"
+                                    f"💰 Giá: {last_price}\n"
+                                    f"📊 Volume 24h: ${volume:,.0f}\n"
+                                    f"📋 Đã thêm vào Watchlist để theo dõi."
+                                )
+                                self.bot.send_message(alert_msg)
+                                count += 1
+                                
+                except Exception as e:
+                    continue
+            
+            if count > 0:
+                logger.info(f"🔥 Added {count} high-volatility coins to watchlist")
+                
+        except Exception as e:
+            logger.error(f"Error in volatility scan: {e}")
     
     def _quick_scan_top_volume(self):
         """
@@ -229,7 +366,561 @@ class RealtimePumpDetector:
                 
         except Exception as e:
             logger.error(f"Error in quick scan: {e}", exc_info=True)
+
+    def _priority_rescan_tracked(self):
+        """
+        FAST RE-SCAN: Only re-check coins already in last_gemini_alerts.
+        Runs every 2 minutes. Typically 5-15 coins = very fast (~10-20 seconds).
+        """
+        try:
+            tracked_symbols = list(self.last_gemini_alerts.keys())
+            if not tracked_symbols:
+                return
+            
+            # Filter: only re-scan coins alerted in the last 4 hours
+            current_time = time.time()
+            active_symbols = []
+            for sym in tracked_symbols:
+                alert_data = self.last_gemini_alerts[sym]
+                time_diff = current_time - alert_data.get('time', 0)
+                if time_diff < 14400:  # 4 hours
+                    active_symbols.append(sym)
+            
+            if not active_symbols:
+                return
+            
+            # Fetch realtime ticker data (1 API call)
+            try:
+                raw_tickers = self.binance.client.get_ticker()
+                ticker_map = {t['symbol']: t for t in raw_tickers}
+            except Exception as e:
+                logger.error(f"Priority Re-scan: Failed to fetch tickers: {e}")
+                ticker_map = {}
+            
+            logger.info(f"🔄 Priority Re-scan: Checking {len(active_symbols)} coins: {', '.join(active_symbols[:5])}...")
+            
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(self._analyze_pre_pump, symbol, ticker_map.get(symbol)): symbol for symbol in active_symbols}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            symbol = result['symbol']
+                            current_score = result.get('confidence', 0)
+                            current_price = float(self.binance.get_current_price(symbol))
+                            current_vol = result.get('vol_24h', 0)
+                            current_vol_usdt = result.get('vol_24h_usdt', 0)
+                            
+                            # Check UPDATE conditions against last alert
+                            if symbol in self.last_gemini_alerts:
+                                last_data = self.last_gemini_alerts[symbol]
+                                prev_score = last_data['score']
+                                prev_price = last_data.get('price', current_price)
+                                prev_vol = last_data.get('vol_24h', current_vol)
+                                update_count = last_data.get('update_count', 0)
+                                
+                                should_alert = False
+                                changes = {}
+                                vol_change = 0  # Initialize to avoid NameError
+                                price_change = 0
+                                
+                                # Score increased by 5+
+                                if current_score >= prev_score + 5:
+                                    should_alert = True
+                                    result['evidence'].append(f"📈 Điểm Tín Hiệu Tăng: {prev_score} -> {current_score}")
+                                
+                                # Price increased by > 2% (Lowered from 3% for better tracking)
+                                if prev_price > 0:
+                                    price_change = ((current_price - prev_price) / prev_price) * 100
+                                    if abs(price_change) > 2: # Track both UP and DOWN significant moves
+                                        should_alert = True
+                                        if price_change > 0:
+                                            result['evidence'].append(f"🚀 Giá Tăng: +{price_change:.1f}%")
+                                        else:
+                                            result['evidence'].append(f"📉 Giá Giảm: {price_change:.1f}%")
+                                
+                                # Volume increased by > 0.05%
+                                if prev_vol > 0:
+                                    vol_change = ((current_vol - prev_vol) / prev_vol) * 100
+                                    if vol_change > 0.05:
+                                        should_alert = True
+                                        result['evidence'].append(f"📊 Volume Đột Biến: +{vol_change:.2f}%")
+                                
+                                # Calculate ALL diffs if alerting
+                                if should_alert:
+                                    # Absolute reference values (old → new)
+                                    changes['prev_score'] = prev_score
+                                    changes['curr_score'] = current_score
+                                    changes['score'] = current_score - prev_score
+                                    
+                                    changes['prev_price_abs'] = prev_price
+                                    changes['curr_price_abs'] = current_price
+                                    if prev_price > 0:
+                                        changes['price_pct'] = price_change
+                                        
+                                    prev_vol_ratio = last_data.get('vol_ratio', 0)
+                                    curr_vol_ratio = result.get('vol_ratio', 0)
+                                    changes['prev_vol_ratio'] = prev_vol_ratio
+                                    changes['curr_vol_ratio'] = curr_vol_ratio
+                                    if prev_vol_ratio > 0:
+                                        changes['vol_ratio'] = curr_vol_ratio - prev_vol_ratio
+
+                                    changes['prev_vol_coin'] = prev_vol
+                                    changes['curr_vol_coin'] = current_vol
+                                    if prev_vol > 0:
+                                        changes['vol_pct'] = vol_change
+                                        changes['vol_coin_abs'] = current_vol - prev_vol
+                                    
+                                    prev_vol_usdt = last_data.get('vol_24h_usdt', 0)
+                                    curr_vol_usdt = current_vol_usdt
+                                    changes['prev_vol_usdt'] = prev_vol_usdt
+                                    changes['curr_vol_usdt'] = curr_vol_usdt
+                                    if prev_vol_usdt > 0:
+                                        changes['vol_usdt_pct'] = ((curr_vol_usdt - prev_vol_usdt) / prev_vol_usdt) * 100
+                                        changes['vol_usdt_abs'] = curr_vol_usdt - prev_vol_usdt
+                                    
+                                    prev_funding = last_data.get('funding_rate', 0)
+                                    curr_funding = result.get('funding_rate', 0)
+                                    changes['prev_funding'] = prev_funding
+                                    changes['curr_funding'] = curr_funding
+                                    changes['funding_diff'] = curr_funding - prev_funding
+                                
+                                if should_alert:
+                                    update_count += 1
+                                    logger.info(f"🔄 Priority UPDATE #{update_count}: {symbol} - Vol +{vol_change if 'vol_pct' in changes else 0:.2f}%")
+                                    
+                                    try:
+                                        from vietnamese_messages import get_stealth_accumulation_alert
+                                        
+                                        formatted_price = self.binance.format_price(symbol, current_price)
+                                        msg = get_stealth_accumulation_alert(
+                                            symbol,
+                                            formatted_price,
+                                            None,
+                                            result['evidence'],
+                                            supply_shock_data=result.get('supply_shock'),
+                                            funding_rate=result.get('funding_rate', 0),
+                                            vol_ratio=result.get('vol_ratio', 1),
+                                            vol_24h=current_vol,
+                                            vol_24h_usdt=current_vol_usdt,
+                                            price_change_24h=result.get('price_change_24h', 0),
+                                            red_candles_6=result.get('red_candles_6', 0),
+                                            update_count=update_count,
+                                            changes=changes,
+                                            entry_zone=result.get('entry_zone'),
+                                            tp_sl_info=result.get('tp_sl_info')
+                                        )
+                                        
+                                        # Message is fully formatted by get_stealth_accumulation_alert now
+                                        logger.info(f"Stealth Pump Detected for {symbol} (Rank {result.get('tier_label', 'UPDATE')})")
+                                        
+                                        # Generate Keyboard
+                                        webapp_url = self.bot._get_webapp_url() if hasattr(self.bot, '_get_webapp_url') else None
+                                        keyboard = self.bot.create_update_keyboard(symbol, webapp_url=webapp_url)
+                                        
+                                        # Send with rate limit protection
+                                        if msg:
+                                            self.bot.send_message(msg, reply_markup=keyboard)
+                                            time.sleep(2) # Prevent Rate Limit
+
+                                        
+                                        # Store Alert Data for Updates & Trailing Stop
+                                        self.last_gemini_alerts[symbol].update({
+                                            'alert_type': 'GEMINI',
+                                            'tier': result.get('tier_label', 'UPDATE'),
+                                            'score': analysis['quality_score'],
+                                            'price': current_price,
+                                            'vol_coin': result.get('vol_24h', 0),
+                                            'vol_usdt': result.get('vol_24h_usdt', 0),
+                                            'vol_ratio': analysis.get('vol_ratio', 0),
+                                            'funding': analysis.get('funding_rate', 0),
+                                            'last_update': datetime.now(),
+                                            'update_count': update_count,
+                                            'last_update_diff': changes, # Save diff context for AI
+                                            # Trailing Stop Data
+                                            'max_price': float(current_price),
+                                            'tp1': result.get('tp_sl_info', {}).get('tp1', 0),
+                                            'drop_alert_sent': False
+                                        })
+                                        self._save_history()
+                                        
+                                    except Exception as e:
+                                        logger.error(f"Priority Re-scan alert error: {e}")
+                                
+                                # === 3. TRAILING STOP & DROP DETECTION (Always Run) ===
+                                try:
+                                    # Update Max Price
+                                    curr_p = float(current_price)
+                                    max_p = self.last_gemini_alerts[symbol].get('max_price', 0)
+                                    
+                                    if curr_p > max_p:
+                                        self.last_gemini_alerts[symbol]['max_price'] = curr_p
+                                        max_p = curr_p 
+                                    
+                                    # Check Drop Logic
+                                    tp1 = self.last_gemini_alerts[symbol].get('tp1', 0)
+                                    drop_sent = self.last_gemini_alerts[symbol].get('drop_alert_sent', False)
+                                    
+                                    # Only check if we hit TP1 and haven't alerted yet
+                                    if tp1 > 0 and max_p >= tp1 and not drop_sent:
+                                        # Check Drop % (3%)
+                                        drop_pct = (max_p - curr_p) / max_p
+                                        if drop_pct >= 0.03:
+                                            # Analyze Flow
+                                            flow_ratio = self._analyze_taker_flow(symbol)
+                                            
+                                            if flow_ratio > 1.3:
+                                                signal_type = 'DUMP'
+                                            else:
+                                                signal_type = 'HEALTHY'
+                                                
+                                            # Send Alert
+                                            alert_msg = get_trailing_stop_alert(symbol, curr_p, drop_pct*100, signal_type, flow_ratio)
+                                            self.bot.send_message(alert_msg)
+                                            time.sleep(2) # Prevent Rate Limit
+                                            logger.info(f"Sent Trailing Stop Alert for {symbol} ({signal_type})")
+                                            self.last_gemini_alerts[symbol]['drop_alert_sent'] = True
+                                            
+                                except Exception as e:
+                                    logger.error(f"Trailing stop error {symbol}: {e}")
+                    except Exception as e:
+                        sym = futures[future]
+                        logger.error(f"Priority Re-scan error {sym}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Priority Re-scan failed: {e}")
     
+    def _scan_pre_pump(self):
+        """
+        LAYER 0: PRE-PUMP DETECTION (GEMINI X2)
+        Scan for stealth accumulation (Low volatility + Rising Volume)
+        """
+        try:
+            # Get all USDT symbols with full ticker data
+            # User Request: "Track gainer tokens with 24h volume from high to low"
+            try:
+                all_symbols_data = self.binance.get_all_symbols(quote_asset='USDT', min_volume=100000) # Min 100k vol filter
+                
+                # Separate Gainers and Losers
+                gainers = [s for s in all_symbols_data if s['price_change_percent'] >= 0]
+                losers = [s for s in all_symbols_data if s['price_change_percent'] < 0]
+                
+                # Sort both lists by Volume (High to Low)
+                gainers.sort(key=lambda x: x['volume'], reverse=True)
+                losers.sort(key=lambda x: x['volume'], reverse=True)
+                
+                # Combine: Gainers first!
+                sorted_data = gainers + losers
+                symbols = [s['symbol'] for s in sorted_data]
+                
+                logger.info(f"💎 Pre-Pump Scan: Analyzing {len(symbols)} coins (Gainers First, Vol Desc)...")
+                logger.info(f"   • Top Gainer: {gainers[0]['symbol']} (Vol {gainers[0]['volume']:,.0f}, +{gainers[0]['price_change_percent']}%)" if gainers else "")
+                
+            except Exception as e:
+                logger.error(f"Error getting sorted symbols: {e}")
+                symbols = self.binance.get_all_usdt_symbols() # Fallback
+
+            if not symbols:
+                return
+
+            # Step 1: Get ALL Tickers (Realtime 24h Volume)
+            # This is efficient (1 call) and gives us "true" 24h volume
+            try:
+                tickers = self.binance.get_all_tickers() # Returns list of dicts [{'symbol': '...', 'price': '...'}, ...]
+                # We need 24h ticker which has volume. 'get_all_tickers' usually returns price.
+                # Client.get_ticker() without symbol returns all 24h tickers.
+                # Let's check binance_client.py or assume get_ticker() works.
+                # If binance_client wrapper doesn't support list, we might need to use the underlying client or loop.
+                # Standard binance-python: client.get_ticker() -> List of dicts if no symbol.
+                
+                # Check self.binance.client
+                raw_tickers = self.binance.client.get_ticker() 
+                # Map to dict for fast lookup: {'BTCUSDT': {'volume': ..., 'quoteVolume': ...}}
+                ticker_map = {t['symbol']: t for t in raw_tickers}
+                logger.info(f"📊 Realtime Ticker Data fetched for {len(ticker_map)} symbols")
+            except Exception as e:
+                logger.error(f"Failed to fetch realtime tickers: {e}")
+                ticker_map = {}
+
+            with ThreadPoolExecutor(max_workers=20) as executor:
+                # Pass ticker data to analyze function
+                futures = {executor.submit(self._analyze_pre_pump, symbol, ticker_map.get(symbol)): symbol for symbol in symbols}
+                
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                        if result:
+                            # Check deduplication / update logic
+                            current_time = time.time()
+                            symbol = result['symbol']
+                            current_score = result.get('confidence', 0)
+                            
+                            # Get current metrics for smart comparison
+                            current_price = float(self.binance.get_current_price(symbol))
+                            
+                            # Get Realtime Volume (Now returned by Advanced Detector)
+                            current_vol = result.get('vol_24h', 0)
+                            current_vol_usdt = result.get('vol_24h_usdt', 0)
+                            
+                            should_alert = False
+                            alert_type = "NEW"
+                            prev_score = 0
+                            prev_price = 0
+                            prev_vol = 0
+                            update_count = 0
+                            
+                            if symbol in self.last_gemini_alerts:
+                                last_data = self.last_gemini_alerts[symbol]
+                                time_diff = current_time - last_data['time']
+                                prev_score = last_data['score']
+                                prev_price = last_data.get('price', current_price)
+                                prev_vol = last_data.get('vol_24h', current_vol)
+                                update_count = last_data.get('update_count', 0)
+                                
+                                # SMART ALERT LOGIC
+                                # 1. Cooldown: Increase to 4 hours (14400s) for New/Repeat alerts
+                                if time_diff > 14400:
+                                    should_alert = True
+                                    alert_type = "NEW" 
+                                    update_count = 0 # Reset update count since it's practically a new wave 
+                                    
+                                # 2. UPDATE: Significant Changes within cooldown
+                                else:
+                                    # Score increased by 5+
+                                    if current_score >= prev_score + 5:
+                                        should_alert = True
+                                        alert_type = "UPDATE"
+                                        update_count += 1
+                                        result['evidence'].append(f"📈 Điểm Tín Hiệu Tăng: {prev_score} -> {current_score}")
+                                        
+                                    # Price increased by > 3%
+                                    price_change = 0
+                                    if prev_price > 0:
+                                        price_change = ((current_price - prev_price) / prev_price) * 100
+                                        
+                                    if price_change > 3:
+                                        should_alert = True
+                                        alert_type = "UPDATE"
+                                        if current_score < prev_score + 5: # Only increment if not already incremented by Score
+                                             update_count += 1
+                                        result['evidence'].append(f"🚀 Giá Tăng Mạnh: +{price_change:.1f}% (so với tin trước)")
+                                        
+                                    # Volume 24h increased by > 0.15% (Realtime Tracking)
+                                    # User Note: "0.5% is still too large".
+                                    # 0.15% allows tracking micro-bursts of volume.
+                                    vol_change = 0
+                                    if prev_vol > 0:
+                                        vol_change = ((current_vol - prev_vol) / prev_vol) * 100
+                                        
+                                        if vol_change > 0.15:
+                                            should_alert = True
+                                            alert_type = "UPDATE"
+                                            if current_score < prev_score + 5 and price_change <= 3: # Only increment if not already
+                                                 update_count += 1
+                                            result['evidence'].append(f"📊 Volume Đột Biến: +{vol_change:.2f}% (Dòng tiền vào)")
+                                        
+                            else:
+                                # Only alert NEW if Score >= 80 (Filter weak signals)
+                                if current_score >= 80:
+                                    should_alert = True
+                                    alert_type = "NEW"
+                            
+                            if should_alert:
+                                # Build changes dict for UPDATE alerts
+                                changes = None
+                                if alert_type == "UPDATE" and symbol in self.last_gemini_alerts:
+                                    last_data = self.last_gemini_alerts[symbol]
+                                    changes = {}
+                                    changes['prev_score'] = last_data.get('score', 0)
+                                    changes['curr_score'] = current_score
+                                    changes['prev_price_abs'] = last_data.get('price', 0)
+                                    changes['curr_price_abs'] = current_price
+                                    if last_data.get('price', 0) > 0:
+                                        changes['price_pct'] = ((current_price - last_data['price']) / last_data['price']) * 100
+                                    changes['prev_vol_ratio'] = last_data.get('vol_ratio', 0)
+                                    changes['curr_vol_ratio'] = result.get('vol_ratio', 0)
+                                    changes['prev_vol_coin'] = last_data.get('vol_24h', 0)
+                                    changes['curr_vol_coin'] = current_vol
+                                    if last_data.get('vol_24h', 0) > 0:
+                                        changes['vol_pct'] = ((current_vol - last_data['vol_24h']) / last_data['vol_24h']) * 100
+                                    changes['prev_vol_usdt'] = last_data.get('vol_24h_usdt', 0)
+                                    changes['curr_vol_usdt'] = current_vol_usdt
+                                    if last_data.get('vol_24h_usdt', 0) > 0:
+                                        changes['vol_usdt_pct'] = ((current_vol_usdt - last_data['vol_24h_usdt']) / last_data['vol_24h_usdt']) * 100
+                                    changes['prev_funding'] = last_data.get('funding_rate', 0)
+                                    changes['curr_funding'] = result.get('funding_rate', 0)
+                                    changes['funding_diff'] = result.get('funding_rate', 0) - last_data.get('funding_rate', 0)
+
+                                # Log detection
+                                logger.info(f"💎 GEMINI X2 {alert_type}: {symbol} - Score {current_score} | VolGap {vol_change if 'vol_change' in locals() else 0:.1f}%")
+                                
+                                # Send Telegram Alert
+                                try:
+                                    from vietnamese_messages import get_stealth_accumulation_alert
+                                    
+                                    formatted_price = self.binance.format_price(result['symbol'], current_price)
+                                    
+                                    msg = get_stealth_accumulation_alert(
+                                        result['symbol'],
+                                        formatted_price,
+                                        None,
+                                        result['evidence'],
+                                        supply_shock_data=result.get('supply_shock'),
+                                        funding_rate=result.get('funding_rate', 0),
+                                        vol_ratio=result.get('vol_ratio', 1),
+                                        vol_24h=result.get('vol_24h', 0),
+                                        vol_24h_usdt=result.get('vol_24h_usdt', 0),
+                                        price_change_24h=result.get('price_change_24h', 0),
+                                        red_candles_6=result.get('red_candles_6', 0),
+                                        entry_zone=result.get('entry_zone'),
+                                        tp_sl_info=result.get('tp_sl_info'),
+                                        update_count=update_count, # Pass update count!
+                                        changes=changes # Inject diff context!
+                                    )
+                                    
+                                    # Generate Keyboard based on alert type
+                                    webapp_url = self.bot._get_webapp_url() if hasattr(self.bot, '_get_webapp_url') else None
+                                    if alert_type == "UPDATE":
+                                        keyboard = self.bot.create_update_keyboard(result['symbol'], webapp_url=webapp_url)
+                                    else:
+                                        keyboard = self.bot.create_symbol_analysis_keyboard(result['symbol'], chat_type='private')
+                                    
+                                    if msg:
+                                        self.bot.send_message(msg, reply_markup=keyboard)
+                                        time.sleep(2) # Prevent Rate Limit
+                                    
+                                    # Update tracking with VOLUME
+                                    self.last_gemini_alerts[symbol] = {
+                                        'time': current_time,
+                                        'score': current_score,
+                                        'price': current_price,
+                                        'vol_24h': current_vol,
+                                        'vol_24h_usdt': current_vol_usdt,
+                                        'vol_ratio': result.get('vol_ratio', 0),
+                                        'funding_rate': result.get('funding_rate', 0),
+                                        'update_count': update_count,
+                                        # Trailing Stop Data
+                                        'max_price': float(current_price),
+                                        'tp1': result.get('tp_sl_info', {}).get('tp1', 0),
+                                        'drop_alert_sent': False
+                                    }
+                                    self._save_history() # Auto-save/backup
+                                    
+                                except Exception as e:
+                                    logger.error(f"Error sending Gemini X2 alert: {e}")
+                            else:
+                                # logger.info(f"Skipping {symbol} (No significant change: Score {current_score}, Price {current_price})")
+                                pass
+                            
+                            # Add to detection list for confirmation
+                            if result['symbol'] not in self.detected_pumps:
+                                self.detected_pumps[result['symbol']] = {
+                                    'layer1': result, # Store as layer 1 to trigger confirmation
+                                    'layer1_time': time.time(),
+                                    'layer2': None,
+                                    'layer3': None,
+                                    'is_pre_pump': True
+                                }
+                                
+                    except Exception as e:
+                        logger.debug(f"Pre-pump scan error: {e}")
+            
+            # Run Smart Watchlist Cleanup (Once per scan cycle checking 1h interval)
+            # We can use a simple timestamp check
+            if not hasattr(self, 'last_cleanup_time') or time.time() - self.last_cleanup_time > 3600:
+                self._clean_watchlist()
+                self.last_cleanup_time = time.time()
+
+                        
+        except Exception as e:
+            logger.error(f"Error in pre-pump scan: {e}")
+
+    def _analyze_pre_pump(self, symbol: str, ticker_data: Optional[Dict] = None) -> Optional[Dict]:
+        """
+        Analyze single coin for Pre-Pump signal
+        """
+        try:
+            # Get 1h klines (last 50 hours)
+            klines = self.binance.get_klines(symbol, '1h', limit=50)
+            if klines is None or klines.empty:
+                return None
+                
+            # Use Advanced Detector to find Stealth Accumulation
+            # Note: We need to instantiate it if not passed, but we passed it in __init__
+            if not self.advanced_detector:
+                from advanced_pump_detector import AdvancedPumpDumpDetector
+                self.advanced_detector = AdvancedPumpDumpDetector(self.binance)
+                
+            # Pass realtime ticker data for accurate 24h Volume Growth check
+            # Fallback: if bulk ticker data is missing, fetch individual ticker
+            if ticker_data is None:
+                try:
+                    ticker_data = self.binance.client.get_ticker(symbol=symbol)
+                except:
+                    pass
+            result = self.advanced_detector._detect_stealth_accumulation(klines, ticker_data=ticker_data, symbol=symbol)
+            
+            if result and result.get('detected'):
+                result['symbol'] = symbol
+
+                # STRICT MODE FILTER
+                # 1. Score >= 70 (Strong Signal)
+                # 2. Score >= 65 AND 24h Vol Growth Bonus (Valid Near Miss)
+                quality_score = result.get('confidence', 0)
+                
+                # Check for Vol Growth Bonus in specific evidence or check result
+                # Evidence string format: "• 24h Vol Growth: +5..."
+                has_vol_growth = any("24h Vol Growth" in e for e in result.get('evidence', []))
+                
+                is_valid = False
+                if quality_score >= 70:
+                    is_valid = True
+                elif quality_score >= 65 and has_vol_growth:
+                    is_valid = True
+                    
+                if not is_valid:
+                    # logger.info(f"⚠️ Skipped {symbol} (Score {quality_score} < 70/65+Vol)")
+                    return None
+                    
+                # LAYER 4: Check Supply Shock (Order Book)
+                try:
+                    current_price = float(klines.iloc[-1]['close'])
+                    # Get order book (depth 100 is enough for 5%)
+                    order_book = self.binance.get_order_book(symbol, limit=100)
+                    
+                    supply_shock = self.advanced_detector._analyze_supply_shock(order_book, current_price)
+                    result['supply_shock'] = supply_shock
+                    
+                    # Estimate Pump Time
+                    pump_time = self.advanced_detector._estimate_pump_time(klines)
+                    result['pump_time'] = pump_time
+                    result['evidence'].append(f"⏳ Dự Kiến Pump: {pump_time}")
+                    
+                    if supply_shock.get('detected'):
+                        logger.info(f"💎 SUPPLY SHOCK FOUND for {symbol}: Cost to push 5% = ${supply_shock.get('cost_to_push_5pct'):,.0f}")
+                        
+                    # AUTO-ADD TO WATCHLIST (Strict Criteria met)
+                    if self.watchlist and not self.watchlist.contains(symbol):
+                        # Pass price and score for tracking
+                        success, msg = self.watchlist.add(symbol, price=current_price, score=quality_score)
+                        if success:
+                            logger.info(f"✅ Auto-added {symbol} to Watchlist (Score {quality_score}, Entry: {current_price})")
+                            result['evidence'].append("📋 Auto-added to Watchlist")
+                        
+                except Exception as e:
+                    logger.error(f"Error checking supply shock for {symbol}: {e}")
+                    result['supply_shock'] = None
+                    result['pump_time'] = "Unknown"
+                
+                return result
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error analyzing pre-pump {symbol}: {e}")
+            return None
+
     def _scan_layer1(self):
         """
         Layer 1: Fast detection on 5m timeframe
@@ -246,7 +937,7 @@ class RealtimePumpDetector:
             
             # Parallel scanning with MORE workers for faster detection
             detected = []
-            with ThreadPoolExecutor(max_workers=30) as executor:  # Increased from 10 to 30
+            with ThreadPoolExecutor(max_workers=30) as executor:
                 futures = {executor.submit(self._analyze_layer1, symbol): symbol for symbol in symbols}
                 
                 for future in as_completed(futures):
@@ -275,6 +966,106 @@ class RealtimePumpDetector:
         except Exception as e:
             logger.error(f"Error in Layer 1 scan: {e}", exc_info=True)
     
+        except Exception as e:
+            logger.error(f"Error in Layer 1 scan: {e}", exc_info=True)
+
+    def _clean_watchlist(self):
+        """
+        SMART CLEANUP: Remove weak/stagnant coins from watchlist
+        Run every 1 hour
+        """
+        try:
+            if not self.watchlist:
+                return
+
+            logger.info("🧹 Smart Watchlist Cleanup: Analyzing active coins...")
+            
+            # Get current watchlist
+            current_list = self.watchlist.get_all()
+            details = self.watchlist.details
+            current_time = time.time()
+            
+            removed_count = 0
+            
+            for symbol in current_list:
+                # 1. Check Score (Re-analyze)
+                # We need to re-run detection to get current score
+                # This might be heavy if list is huge, but we cap list at 20-30 usually
+                try:
+                    # Get 1h klines for quick check
+                    klines = self.binance.get_klines(symbol, '1h', limit=50)
+                    if klines is None or klines.empty:
+                        continue
+                        
+                    if not self.advanced_detector:
+                         from advanced_pump_detector import AdvancedPumpDumpDetector
+                         self.advanced_detector = AdvancedPumpDumpDetector(self.binance)
+                    
+                    result = self.advanced_detector._detect_stealth_accumulation(klines)
+                    current_score = result.get('confidence', 0) if result else 0
+                    
+                    # RULE 1: Score Drop (Invalid Signal)
+                    if current_score < 50:
+                        self.watchlist.remove(symbol)
+                        logger.info(f"🗑️ Removed {symbol}: Score dropped to {current_score} (< 50)")
+                        self.bot.send_message(f"🗑️ <b>Đã xóa {symbol}</b> khỏi Watchlist\n📉 Lý do: Tín hiệu yếu (Score {current_score})")
+                        removed_count += 1
+                        continue
+                        
+                    # RULE 2: Stagnant (Time > 24h AND Price Change < 3%)
+                    entry_data = details.get(symbol, {})
+                    entry_time = entry_data.get('time', 0)
+                    entry_price = entry_data.get('price', 0)
+                    
+                    if entry_time > 0 and entry_price > 0:
+                        time_diff_hours = (current_time - entry_time) / 3600
+                        current_price = float(klines.iloc[-1]['close'])
+                        price_change = ((current_price - entry_price) / entry_price) * 100
+                        
+                        if time_diff_hours > 24 and price_change < 3:
+                             self.watchlist.remove(symbol)
+                             logger.info(f"🗑️ Removed {symbol}: Stagnant (> 24h, Change {price_change:.1f}%)")
+                             self.bot.send_message(f"🗑️ <b>Đã xóa {symbol}</b> khỏi Watchlist\n⏳ Lý do: Sideway quá lâu (> 24h, +{price_change:.1f}%)")
+                             removed_count += 1
+                             
+                except Exception as e:
+                    logger.error(f"Error checking {symbol} for cleanup: {e}")
+            
+            if removed_count > 0:
+                logger.info(f"🧹 Cleanup Complete: Removed {removed_count} coins")
+                
+        except Exception as e:
+            logger.error(f"Error in watchlist cleanup: {e}")
+            
+    def _analyze_taker_flow(self, symbol):
+        """
+        Analyze Taker Buy/Sell Flow for last 1h
+        """
+        try:
+            # Get last 1h candle
+            klines = self.binance.get_klines(symbol, '1h', limit=1)
+            if klines is None or klines.empty:
+                return 1.0
+                
+            # Current candle data
+            # Columns: ... volume(5), ... taker_buy_base(9)
+            # But DataFrame columns are named.
+            # ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_volume', 'trades', 'taker_buy_base', 'taker_buy_quote', 'ignore']
+            
+            row = klines.iloc[-1]
+            total_vol = float(row['volume'])
+            buy_vol = float(row['taker_buy_base'])
+            sell_vol = total_vol - buy_vol
+            
+            if buy_vol == 0:
+                return 5.0 # High sell pressure if 0 buy
+                
+            return sell_vol / buy_vol
+            
+        except Exception as e:
+            logger.error(f"Error analyzing flow for {symbol}: {e}")
+            return 1.0
+
     def _analyze_layer1(self, symbol: str) -> Optional[Dict]:
         """
         Analyze single coin for Layer 1 (5m fast detection)
@@ -284,7 +1075,7 @@ class RealtimePumpDetector:
         """
         try:
             # Get 5m klines (last 10 candles = 50 minutes)
-            df_5m = self.binance.get_klines(symbol, '5m', limit=10)
+            df_5m = self.binance.get_klines(symbol, '5m', limit=100)
             if df_5m is None or len(df_5m) < 5:
                 return None
             
@@ -336,9 +1127,33 @@ class RealtimePumpDetector:
             volume_increasing = all(volume_last_3[i] <= volume_last_3[i+1] for i in range(len(volume_last_3)-1))
             consistency_score = 10 if volume_increasing else 0
             
+            # 6. WHALE VOLUME (Absorption) Check (NEW)
+            # Detects massive volume spikes with minimal price movement (Accumulation)
+            whale_score = 0
+            is_whale = False
+            if volume_spike >= 10.0 and abs(price_change_5m) < 1.5:
+                whale_score = 35 # Major boost (+35)
+                is_whale = True
+                logger.info(f"🐋 WHALE VOLUME DETECTED: {symbol} (Vol: {volume_spike:.1f}x, Price: {price_change_5m:.2f}%)")
+
             # CALCULATE PUMP SCORE
-            pump_score = volume_score + momentum_score + green_score + rsi_score + consistency_score
+            pump_score = volume_score + momentum_score + green_score + rsi_score + consistency_score + whale_score
             
+            # AUTO-ADD TO WATCHLIST (If Score >= threshold OR Whale Volume)
+            # Check if watchlist manager is available
+            if self.watchlist and (pump_score >= self.auto_save_threshold or is_whale):
+                try:
+                    # Get current price if not already available
+                    if not current_price:
+                        current_price = float(df_5m.iloc[-1]['close'])
+                        
+                    # Add to watchlist
+                    success, msg = self.watchlist.add(symbol, price=current_price, score=pump_score)
+                    if success:
+                        logger.info(f"📋 Auto-added {symbol} to Watchlist (Score {pump_score:.0f}, Whale: {is_whale})")
+                except Exception as e:
+                    logger.error(f"Error auto-adding {symbol} to watchlist: {e}")
+
             # Only return if significant
             if pump_score >= self.layer1_threshold:
                 return {
@@ -356,6 +1171,7 @@ class RealtimePumpDetector:
                         'rsi_change': round(rsi_change, 2),
                         'rsi_score': round(rsi_score, 1),
                         'consistency_score': round(consistency_score, 1),
+                        'whale_score': whale_score,
                         'current_rsi': round(current_rsi, 2),
                         'current_price': current_price
                     }
@@ -892,8 +1708,9 @@ class RealtimePumpDetector:
             
             msg += f"\n⚠️ <i>Đây là phân tích kỹ thuật, không phải tư vấn tài chính</i>"
             
+            # === 4. WATCHLIST MONITORING (Existing) ===
             # Auto-save to watchlist if score is high
-            if self.watchlist and score >= self.auto_save_threshold:
+            if self.watchlist and score >= 80: # Using 80 as hardcoded threshold or self.auto_save_threshold if available
                 try:
                     # Check if watchlist is too full
                     if self.watchlist.count() < self.max_watchlist_size:
