@@ -280,8 +280,8 @@ class RealtimePumpDetector:
                     volume = float(t['quoteVolume'])
                     last_price = float(t['lastPrice'])
                     
-                    # CRITERIA: > 15% Gain AND > 1M Volume (Liquid coins only)
-                    if price_change >= 15.0 and volume >= 1000000:
+                    # CRITERIA: > 8% Gain AND > 100K Volume (catch micro-caps early)
+                    if price_change >= 8.0 and volume >= 100000:
                         # Check if already in watchlist
                         if self.watchlist and symbol not in self.watchlist.get_all():
                             success, msg = self.watchlist.add(symbol, price=last_price, score=80) # High score for visibility
@@ -321,7 +321,7 @@ class RealtimePumpDetector:
                 symbols_data = self.binance.get_all_symbols(
                     quote_asset='USDT',
                     excluded_keywords=['BEAR', 'BULL', 'DOWN', 'UP'],
-                    min_volume=100000  # Minimum 100k USDT volume
+                    min_volume=10000  # Minimum 10k USDT volume (lowered to catch micro-caps)
                 )
                 
                 if not symbols_data:
@@ -526,23 +526,22 @@ class RealtimePumpDetector:
 
                                         
                                         # Store Alert Data for Updates & Trailing Stop
-                                        existing_max = self.last_gemini_alerts[symbol].get('max_price', 0)
                                         self.last_gemini_alerts[symbol].update({
                                             'alert_type': 'GEMINI',
                                             'tier': result.get('tier_label', 'UPDATE'),
-                                            'score': current_score,
+                                            'score': analysis['quality_score'],
                                             'price': current_price,
-                                            'vol_24h': result.get('vol_24h', 0),
-                                            'vol_24h_usdt': result.get('vol_24h_usdt', 0),
-                                            'vol_ratio': result.get('vol_ratio', 0),
-                                            'funding_rate': result.get('funding_rate', 0),
+                                            'vol_coin': result.get('vol_24h', 0),
+                                            'vol_usdt': result.get('vol_24h_usdt', 0),
+                                            'vol_ratio': analysis.get('vol_ratio', 0),
+                                            'funding': analysis.get('funding_rate', 0),
                                             'last_update': datetime.now(),
                                             'update_count': update_count,
                                             'last_update_diff': changes, # Save diff context for AI
-                                            # Trailing Stop Data - preserve max_price
-                                            'max_price': max(float(current_price), existing_max),
+                                            # Trailing Stop Data
+                                            'max_price': float(current_price),
                                             'tp1': result.get('tp_sl_info', {}).get('tp1', 0),
-                                            'drop_alert_sent': self.last_gemini_alerts[symbol].get('drop_alert_sent', False)
+                                            'drop_alert_sent': False
                                         })
                                         self._save_history()
                                         
@@ -601,7 +600,7 @@ class RealtimePumpDetector:
             # Get all USDT symbols with full ticker data
             # User Request: "Track gainer tokens with 24h volume from high to low"
             try:
-                all_symbols_data = self.binance.get_all_symbols(quote_asset='USDT', min_volume=100000) # Min 100k vol filter
+                all_symbols_data = self.binance.get_all_symbols(quote_asset='USDT', min_volume=10000) # Min 10k vol filter (lowered to catch micro-caps)
                 
                 # Separate Gainers and Losers
                 gainers = [s for s in all_symbols_data if s['price_change_percent'] >= 0]
@@ -722,8 +721,13 @@ class RealtimePumpDetector:
                                             result['evidence'].append(f"📊 Volume Đột Biến: +{vol_change:.2f}% (Dòng tiền vào)")
                                         
                             else:
-                                # Only alert NEW if Score >= 80 (Filter weak signals)
-                                if current_score >= 80:
+                                # NEW ALERT THRESHOLD
+                                # Momentum signals (65+): Lower threshold because they are time-sensitive
+                                # Stealth signals (80+): Higher threshold to filter weak signals
+                                signal_type = result.get('signal_type', '')
+                                min_score = 65 if signal_type == 'MOMENTUM_BREAKOUT' else 80
+                                
+                                if current_score >= min_score:
                                     should_alert = True
                                     alert_type = "NEW"
                             
@@ -792,7 +796,7 @@ class RealtimePumpDetector:
                                         time.sleep(2) # Prevent Rate Limit
                                     
                                     # Update tracking with VOLUME
-                                    new_alert_data = {
+                                    self.last_gemini_alerts[symbol] = {
                                         'time': current_time,
                                         'score': current_score,
                                         'price': current_price,
@@ -801,19 +805,11 @@ class RealtimePumpDetector:
                                         'vol_ratio': result.get('vol_ratio', 0),
                                         'funding_rate': result.get('funding_rate', 0),
                                         'update_count': update_count,
+                                        # Trailing Stop Data
+                                        'max_price': float(current_price),
                                         'tp1': result.get('tp_sl_info', {}).get('tp1', 0),
+                                        'drop_alert_sent': False
                                     }
-                                    if symbol in self.last_gemini_alerts and alert_type == "UPDATE":
-                                        # UPDATE: preserve trailing stop data
-                                        existing_max = self.last_gemini_alerts[symbol].get('max_price', 0)
-                                        new_alert_data['max_price'] = max(float(current_price), existing_max)
-                                        new_alert_data['drop_alert_sent'] = self.last_gemini_alerts[symbol].get('drop_alert_sent', False)
-                                        self.last_gemini_alerts[symbol].update(new_alert_data)
-                                    else:
-                                        # NEW: fresh tracking data
-                                        new_alert_data['max_price'] = float(current_price)
-                                        new_alert_data['drop_alert_sent'] = False
-                                        self.last_gemini_alerts[symbol] = new_alert_data
                                     self._save_history() # Auto-save/backup
                                     
                                 except Exception as e:
@@ -923,7 +919,80 @@ class RealtimePumpDetector:
                     result['pump_time'] = "Unknown"
                 
                 return result
-                
+            
+            # === FALLBACK: EARLY MOMENTUM DETECTION (5m candles) ===
+            # If stealth accumulation didn't detect, try momentum breakout
+            try:
+                klines_5m = self.binance.get_klines(symbol, '5m', limit=100)
+                if klines_5m is not None and not klines_5m.empty and len(klines_5m) >= 72:
+                    momentum_result = self.advanced_detector._detect_early_momentum(
+                        klines_5m, ticker_data=ticker_data, symbol=symbol
+                    )
+                    
+                    if momentum_result and momentum_result.get('detected'):
+                        momentum_result['symbol'] = symbol
+                        quality_score = momentum_result.get('confidence', 0)
+                        
+                        # Same strict filter as stealth
+                        if quality_score >= 65:
+                            # Add supply shock check
+                            try:
+                                current_price = float(klines_5m.iloc[-1]['close'])
+                                order_book = self.binance.get_order_book(symbol, limit=100)
+                                supply_shock = self.advanced_detector._analyze_supply_shock(order_book, current_price)
+                                momentum_result['supply_shock'] = supply_shock
+                            except:
+                                momentum_result['supply_shock'] = None
+                            
+                            # Auto-add to watchlist
+                            if self.watchlist and not self.watchlist.contains(symbol):
+                                current_price = float(klines_5m.iloc[-1]['close'])
+                                success, msg = self.watchlist.add(symbol, price=current_price, score=quality_score)
+                                if success:
+                                    logger.info(f"✅ Auto-added {symbol} to Watchlist (Momentum Score {quality_score})")
+                                    momentum_result['evidence'].append("📋 Auto-added to Watchlist")
+                            
+                            logger.info(f"🔥 MOMENTUM DETECTED: {symbol} Score={quality_score}")
+                            return momentum_result
+            except Exception as e:
+                logger.debug(f"Momentum detection (5m) failed for {symbol}: {e}")
+            
+            # === FALLBACK 2: EARLY MOMENTUM on 15m candles ===
+            # 15m candles give more stable signals (less noise than 5m)
+            # In ESPUSDT simulation, 15m caught it at Feb 21 00:30 ($0.0724)  
+            try:
+                klines_15m = self.binance.get_klines(symbol, '15m', limit=100)
+                if klines_15m is not None and not klines_15m.empty and len(klines_15m) >= 24:
+                    # For 15m, need at least 24 candles (6h)
+                    momentum_result = self.advanced_detector._detect_early_momentum(
+                        klines_15m, ticker_data=ticker_data, symbol=symbol
+                    )
+                    
+                    if momentum_result and momentum_result.get('detected'):
+                        momentum_result['symbol'] = symbol
+                        quality_score = momentum_result.get('confidence', 0)
+                        
+                        if quality_score >= 65:
+                            try:
+                                current_price = float(klines_15m.iloc[-1]['close'])
+                                order_book = self.binance.get_order_book(symbol, limit=100)
+                                supply_shock = self.advanced_detector._analyze_supply_shock(order_book, current_price)
+                                momentum_result['supply_shock'] = supply_shock
+                            except:
+                                momentum_result['supply_shock'] = None
+                            
+                            if self.watchlist and not self.watchlist.contains(symbol):
+                                current_price = float(klines_15m.iloc[-1]['close'])
+                                success, msg = self.watchlist.add(symbol, price=current_price, score=quality_score)
+                                if success:
+                                    logger.info(f"✅ Auto-added {symbol} to Watchlist (Momentum-15m Score {quality_score})")
+                                    momentum_result['evidence'].append("📋 Auto-added to Watchlist")
+                            
+                            logger.info(f"🔥 MOMENTUM-15m DETECTED: {symbol} Score={quality_score}")
+                            return momentum_result
+            except Exception as e:
+                logger.debug(f"Momentum detection (15m) failed for {symbol}: {e}")
+            
             return None
             
         except Exception as e:

@@ -444,21 +444,24 @@ def get_stealth_accumulation_alert(symbol, price, volume_data, evidence, supply_
     Generate alert message for Stealth Accumulation with TP/SL
     """
     
-    # Extract score from evidence if possible (hacky but works without changing signature too much)
-    # Extract score from evidence if possible (hacky but works without changing signature too much)
+    # Extract score from evidence if possible
     score = 85 # Default
+    is_momentum = False  # Detect if this is a MOMENTUM_BREAKOUT signal
+    
     for item in evidence:
         if "Điểm" in item:
             try:
-                # "Gom Hàng Ẩn (Stealth): Điểm 85/100" -> extract 85
                 score = int(item.split("Điểm ")[1].split("/")[0])
             except:
                 pass
-        elif "Score" in item: # Fallback for old English alerts
+        elif "Score" in item:
             try:
                 score = int(item.split("Score ")[1].split("/")[0])
             except:
                 pass
+        # Detect momentum-type alerts
+        if "Early Momentum" in item or "Vol Spike" in item or "Whale Accumulation" in item:
+            is_momentum = True
     
     # === SIGNAL RANKING SYSTEM ===
     tier_points = 0
@@ -504,38 +507,46 @@ def get_stealth_accumulation_alert(symbol, price, volume_data, evidence, supply_
     elif score >= 75:
         tier_points += 1
     
+    # Factor 4b: Momentum Bonus (NEW)
+    # Momentum signals don't have stealth-specific evidence (OBV, Vol Vào),
+    # so they need a bonus to reach tier 7
+    if is_momentum:
+        tier_points += 3
+        tier_reasons.append("⚡ Momentum Breakout Signal")
+    
     # Factor 5: Quality Gate — penalize weak internals
-    # Check key indicators from evidence strings
-    has_zero_vol = False
-    has_zero_obv = False
-    has_zero_rsi = False
-    has_zero_buy = False
-    
-    for item in evidence:
-        if "Dòng Vol Vào: 0.0/25" in item or "Dòng Vol Vào: 0/25" in item:
-            has_zero_vol = True
-        if "Dòng Tiền OBV: 0/25" in item:
-            has_zero_obv = True
-        if "Vùng RSI Gom: 0/10" in item:
-            has_zero_rsi = True
-        if "Áp Lực Mua: 0/10" in item:
-            has_zero_buy = True
-    
-    if has_zero_vol:
-        tier_points -= 2
-        tier_reasons.append("⚠️ Vol Vào: 0/25 (Không có dòng tiền)")
-    
-    if has_zero_obv:
-        tier_points -= 2  # Increased from -1: no hidden buying is a serious red flag
-        tier_reasons.append("⚠️ OBV: 0/25 (Không có mua ẩn!)")
-    
-    # COMBINED GATE: if BOTH OBV and Buy Pressure are zero — not real accumulation
-    if has_zero_obv and has_zero_buy:
-        tier_points -= 2  # Extra penalty: volume spike only, no actual accumulation evidence
-        tier_reasons.append("⚠️ Cảnh báo: Không có OBV & Áp Lực Mua — chỉ có Vol Spike!")
-    
-    if has_zero_rsi:
-        tier_points -= 1  # RSI outside accumulation zone
+    # ONLY applies to stealth signals (momentum doesn't have OBV/Vol Vào evidence)
+    if not is_momentum:
+        has_zero_vol = False
+        has_zero_obv = False
+        has_zero_rsi = False
+        has_zero_buy = False
+        
+        for item in evidence:
+            if "Dòng Vol Vào: 0.0/25" in item or "Dòng Vol Vào: 0/25" in item:
+                has_zero_vol = True
+            if "Dòng Tiền OBV: 0/25" in item:
+                has_zero_obv = True
+            if "Vùng RSI Gom: 0/10" in item:
+                has_zero_rsi = True
+            if "Áp Lực Mua: 0/10" in item:
+                has_zero_buy = True
+        
+        if has_zero_vol:
+            tier_points -= 2
+            tier_reasons.append("⚠️ Vol Vào: 0/25 (Không có dòng tiền)")
+        
+        if has_zero_obv:
+            tier_points -= 2
+            tier_reasons.append("⚠️ OBV: 0/25 (Không có mua ẩn!)")
+        
+        # COMBINED GATE: if BOTH OBV and Buy Pressure are zero — not real accumulation
+        if has_zero_obv and has_zero_buy:
+            tier_points -= 2
+            tier_reasons.append("⚠️ Cảnh báo: Không có OBV & Áp Lực Mua — chỉ có Vol Spike!")
+        
+        if has_zero_rsi:
+            tier_points -= 1
     
     if vol_ratio < 1.0:
         tier_points -= 1
@@ -550,14 +561,17 @@ def get_stealth_accumulation_alert(symbol, price, volume_data, evidence, supply_
         tier_points -= 2
         tier_reasons.append(f"⚠️ Áp lực bán: {red_candles_6}/6 nến đỏ")
     
-    # Determine Tier (Thresholds tuned to minimize false positives)
-    if tier_points >= 7:
-        tier_label = "🔥🔥🔥 ƯU TIÊN CAO — VÀO NGAY!"
+    # Determine Tier
+    # Momentum signals: Lower threshold (5) because they already passed strict detection (2/5 signals + score >= 65)
+    # Stealth signals: Higher threshold (7) to filter weak accumulation signals
+    min_tier = 5 if is_momentum else 7
+    
+    if tier_points >= min_tier:
+        if tier_points >= 7:
+            tier_label = "🔥🔥🔥 ƯU TIÊN CAO — VÀO NGAY!"
+        else:
+            tier_label = "⚡ MOMENTUM — Theo Dõi Chặt!"
     else:
-        # THEO DÕI & KHẢ QUAN = too noisy OR not absolute enough.
-        # User requested to ONLY see ƯU TIÊN CAO.
-        # We return None so the message isn't sent to Telegram, 
-        # but the coin is still tracked internally in last_gemini_alerts.
         return None
     
     # Entry Zone Formatting

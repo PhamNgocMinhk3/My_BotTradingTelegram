@@ -893,8 +893,8 @@ class AdvancedPumpDumpDetector:
         high_low_range = (recent['high'] - recent['low']) / recent['low']
         avg_volatility = high_low_range.mean()
         
-        # OPTIMIZED: Relaxed from 1.5% to 2.5% to catch more coins like ME
-        is_compressed = avg_volatility < 0.025
+        # OPTIMIZED: Relaxed from 2.5% to 4% to catch declining micro-caps (Wyckoff Spring)
+        is_compressed = avg_volatility < 0.04
         
         # 2. Volume Anomalies (Volume tăng trong khi giá đi ngang)
         # Chia 50 nến thành 2 nửa: 25 nến đầu và 25 nến cuối
@@ -910,7 +910,11 @@ class AdvancedPumpDumpDetector:
         price_trend = np.polyfit(range(len(recent)), recent['close'].values, 1)[0]
         
         # OBV tăng mạnh trong khi giá đi ngang hoặc giảm nhẹ
-        is_obv_divergence = obv_trend > 0 and abs(price_trend) < 0.0001
+        # FIXED: price_trend threshold was 0.0001 (too strict, missed declining coins like ESPUSDT)
+        # Now uses relative threshold: < 1% of average price per candle
+        avg_price = recent['close'].mean()
+        price_trend_threshold = avg_price * 0.01  # 1% of avg price
+        is_obv_divergence = obv_trend > 0 and abs(price_trend) < price_trend_threshold
         
         # 4. RSI Check (NEW) - RSI in accumulation zone (30-60) is ideal
         try:
@@ -954,8 +958,29 @@ class AdvancedPumpDumpDetector:
         
         # DEBUG PRINT
         # print(f"DEBUG: Comp={is_compressed} ({avg_volatility:.4f}), VolInc={is_vol_increasing}, OBV={is_obv_divergence}, Buy={is_buy_dominant}")
+        # 5b. Wyckoff Spring Detection (NEW)
+        # Pattern: Price drops for days, then sudden volume spike at the bottom
+        # This catches coins like ESPUSDT that dump first then pump x4
+        is_wyckoff_spring = False
+        wyckoff_bonus = 0
+        try:
+            # Check if price has been declining (negative trend)
+            price_pct_change = ((recent['close'].iloc[-1] - recent['close'].iloc[0]) / recent['close'].iloc[0]) * 100
+            # RSI oversold or near oversold
+            is_oversold = current_rsi < 40
+            # Volume spike in last 6 candles vs previous average
+            last_6_vol = recent['volume'].iloc[-6:].mean()
+            prev_avg_vol = recent['volume'].iloc[:-6].mean()
+            vol_spike_at_bottom = last_6_vol > prev_avg_vol * 1.5 if prev_avg_vol > 0 else False
+            
+            if price_pct_change < -3 and is_oversold and vol_spike_at_bottom:
+                is_wyckoff_spring = True
+                wyckoff_bonus = 15
+                analysis['evidence'].append(f"🧲 Wyckoff Spring: Giá giảm {price_pct_change:.1f}% + RSI {current_rsi:.0f} + Vol đột biến tại đáy")
+        except:
+            pass
         
-        if is_compressed and (is_vol_increasing or is_obv_divergence):
+        if is_compressed and (is_vol_increasing or is_obv_divergence or is_wyckoff_spring):
             analysis['detected'] = True
             
             # Estimate Pump Time
@@ -1050,7 +1075,7 @@ class AdvancedPumpDumpDetector:
                 pass
 
 
-            total_score = int(compression_score + volume_score + obv_score + rsi_bonus + buy_bonus + pattern_bonus + vol_growth_bonus + funding_bonus)
+            total_score = int(compression_score + volume_score + obv_score + rsi_bonus + buy_bonus + pattern_bonus + vol_growth_bonus + funding_bonus + wyckoff_bonus)
             
             # Store Realtime Volume Data for Smart Alerts
             analysis['vol_24h'] = curr_vol_24h
@@ -1107,6 +1132,232 @@ class AdvancedPumpDumpDetector:
             )
             analysis['tp_sl_info'] = tp_sl_info
             
+        return analysis
+
+    def _detect_early_momentum(self, klines_5m: pd.DataFrame, ticker_data: Optional[Dict] = None, symbol: str = "") -> Dict:
+        """
+        DETECT EARLY MOMENTUM BREAKOUT (Catches coins like ESPUSDT)
+        
+        Analyzes 5-minute candles to find the earliest micro-signals of a pump:
+        1. Volume Spike > 3x of 6h average (institutional buying burst)
+        2. Trades Spike > 3x of 6h average (retail FOMO starting)
+        3. Taker Buy Ratio > 65% (whales aggressively buying)
+        4. Price momentum > 3% in last 1h (breakout confirmation)
+        
+        Requires at least 2 of 4 conditions = EARLY MOMENTUM signal
+        """
+        analysis = {
+            'detected': False,
+            'confidence': 0,
+            'quality_score': 0,
+            'signal_type': 'MOMENTUM_BREAKOUT',
+            'reason': [],
+            'evidence': [],
+            'pump_time': "Unknown"
+        }
+        
+        if klines_5m is None or klines_5m.empty or len(klines_5m) < 24:  # Min 24 candles (supports 15m = 6h)
+            return analysis
+        
+        # FILTER: Reject coins that are DUMPING (24h price change < -5%)
+        # Prevents false positives on dead cat bounces (e.g., DFUSDT -38%, FIROUSDT -25%)
+        if ticker_data:
+            try:
+                pct_24h = float(ticker_data.get('priceChangePercent', 0))
+                if pct_24h < -5:
+                    return analysis  # Skip dumping coins entirely
+            except:
+                pass
+        
+        try:
+            # Dynamic lookback: use all available data up to 72 candles
+            lookback = min(72, len(klines_5m))
+            recent = klines_5m.tail(lookback)
+            
+            # ---- Calculate rolling metrics ----
+            # Average volume over available lookback
+            avg_vol_6h = float(klines_5m['quote_volume'].tail(lookback).mean())
+            avg_trades_6h = float(klines_5m['trades'].astype(float).tail(lookback).mean())
+            
+            # Current candle metrics
+            current_candle = klines_5m.iloc[-1]
+            current_vol = float(current_candle['quote_volume'])
+            current_trades = int(current_candle['trades'])
+            current_price = float(current_candle['close'])
+            
+            # Taker buy ratio on current candle
+            taker_buy_quote = float(current_candle.get('taker_buy_quote', 0))
+            buy_ratio = taker_buy_quote / current_vol if current_vol > 0 else 0.5
+            
+            # 1h price momentum (12 candles ago)
+            if len(klines_5m) >= 12:
+                price_12_ago = float(klines_5m.iloc[-12]['close'])
+                price_1h_change = ((current_price - price_12_ago) / price_12_ago) * 100
+            else:
+                price_1h_change = 0
+            
+            # Spike ratios
+            vol_spike = current_vol / avg_vol_6h if avg_vol_6h > 0 else 1
+            trades_spike = current_trades / avg_trades_6h if avg_trades_6h > 0 else 1
+            
+            # Also check cluster of recent candles (last 3 candles = 15 min)
+            last_3_vol = float(klines_5m['quote_volume'].tail(3).mean())
+            last_3_trades = float(klines_5m['trades'].astype(float).tail(3).mean())
+            vol_spike_cluster = last_3_vol / avg_vol_6h if avg_vol_6h > 0 else 1
+            trades_spike_cluster = last_3_trades / avg_trades_6h if avg_trades_6h > 0 else 1
+            
+            # ---- Multi-signal confluence detection ----
+            signals = 0
+            signal_score = 0
+            
+            # Signal 1: Volume Spike > 3x
+            vol_detected = vol_spike > 3 or vol_spike_cluster > 2.5
+            if vol_detected:
+                signals += 1
+                spike_val = max(vol_spike, vol_spike_cluster)
+                signal_score += min(25, int(spike_val * 5))
+                analysis['evidence'].append(f"⚡ Vol Spike: {spike_val:.1f}x (vs 6h avg)")
+            
+            # Signal 2: Trades Spike > 3x
+            trades_detected = trades_spike > 3 or trades_spike_cluster > 2.5
+            if trades_detected:
+                signals += 1
+                trd_val = max(trades_spike, trades_spike_cluster)
+                signal_score += min(20, int(trd_val * 4))
+                analysis['evidence'].append(f"📈 Trades Spike: {trd_val:.1f}x (vs 6h avg)")
+            
+            # Signal 3: Taker Buy Ratio > 65% (whale buying)
+            # Also check smoothed buy ratio over last 3 candles
+            last_3_buy = float(klines_5m['taker_buy_quote'].tail(3).sum())
+            last_3_total = float(klines_5m['quote_volume'].tail(3).sum())
+            buy_ratio_smooth = last_3_buy / last_3_total if last_3_total > 0 else 0.5
+            
+            whale_buying = buy_ratio > 0.65 or buy_ratio_smooth > 0.62
+            if whale_buying:
+                signals += 1
+                best_buy = max(buy_ratio, buy_ratio_smooth)
+                signal_score += min(20, int((best_buy - 0.5) * 100))
+                analysis['evidence'].append(f"🐋 Whale Buy: {best_buy:.0%} taker buy ratio")
+            
+            # Signal 4: Price momentum > 3% in 1h
+            momentum_detected = price_1h_change > 3
+            if momentum_detected:
+                signals += 1
+                signal_score += min(20, int(price_1h_change * 3))
+                analysis['evidence'].append(f"🚀 Momentum: +{price_1h_change:.1f}% (1h)")
+            
+            # Signal 5: Consecutive Whale Buy (NEW — catches ESPUSDT 23:35-23:45 pattern)
+            # Check last 6 candles for 3+ consecutive with Taker Buy > 60%
+            consecutive_whale = 0
+            max_consecutive = 0
+            whale_candles_detail = []
+            
+            check_range = min(6, len(klines_5m))
+            for ci in range(len(klines_5m) - check_range, len(klines_5m)):
+                candle = klines_5m.iloc[ci]
+                c_vol = float(candle['quote_volume'])
+                c_buy = float(candle.get('taker_buy_quote', 0))
+                c_ratio = c_buy / c_vol if c_vol > 0 else 0.5
+                
+                if c_ratio > 0.60:
+                    consecutive_whale += 1
+                    max_consecutive = max(max_consecutive, consecutive_whale)
+                    whale_candles_detail.append(f"{c_ratio:.0%}")
+                else:
+                    consecutive_whale = 0
+            
+            whale_accumulation = max_consecutive >= 3
+            if whale_accumulation:
+                signals += 1
+                signal_score += 20 + min(15, (max_consecutive - 3) * 5)  # +20 base, +5 per extra
+                ratios_str = ', '.join(whale_candles_detail[-max_consecutive:])
+                analysis['evidence'].append(f"🐋🐋 Whale Accumulation: {max_consecutive} nến liên tiếp Buy>{60}% [{ratios_str}]")
+            
+            # ---- Detection Decision ----
+            # Need at least 2 of 5 signals
+            if signals >= 2:
+                analysis['detected'] = True
+                
+                # Base score + signal score
+                base_bonus = 15  # Pattern detection base
+                total_score = min(100, signal_score + base_bonus)
+                
+                # Extra bonus for 3+ signals (strong confluence)
+                if signals >= 3:
+                    total_score = min(100, total_score + 10)
+                    analysis['evidence'].append(f"💎 Strong Confluence: {signals}/4 signals")
+                if signals >= 4:
+                    total_score = min(100, total_score + 10)
+                
+                # EARLY WARNING BOOST: For 2-signal detections,
+                # boost score if 24h volume is abnormally high vs historical
+                if signals == 2 and ticker_data:
+                    try:
+                        vol_24h = float(ticker_data.get('quoteVolume', 0))
+                        # If 24h volume > $1M for a micro-cap, it's unusual
+                        if vol_24h > 1000000:
+                            total_score = min(100, total_score + 15)
+                            analysis['evidence'].append(f"📊 Vol24h Boost: ${vol_24h:,.0f} (>$1M)")
+                        elif vol_24h > 500000:
+                            total_score = min(100, total_score + 10)
+                            analysis['evidence'].append(f"📊 Vol24h Boost: ${vol_24h:,.0f} (>$500K)")
+                    except:
+                        pass
+                
+                # Funding rate check
+                funding_rate = 0.0
+                try:
+                    funding_rate = self.binance.get_funding_rate(symbol)
+                    if funding_rate < 0:
+                        total_score = min(100, total_score + 5)
+                        analysis['evidence'].append(f"🩸 Funding Rate: {funding_rate*100:.4f}% (Short Squeeze)")
+                    else:
+                        analysis['evidence'].append(f"ℹ️ Funding Rate: {funding_rate*100:.4f}%")
+                except:
+                    pass
+                
+                analysis['quality_score'] = total_score
+                analysis['confidence'] = total_score
+                analysis['funding_rate'] = funding_rate
+                analysis['vol_ratio'] = vol_spike
+                
+                # Store volume data
+                if ticker_data:
+                    analysis['vol_24h'] = float(ticker_data.get('volume', 0))
+                    analysis['vol_24h_usdt'] = float(ticker_data.get('quoteVolume', 0))
+                    analysis['price_change_24h'] = float(ticker_data.get('priceChangePercent', 0))
+                else:
+                    analysis['vol_24h'] = 0
+                    analysis['vol_24h_usdt'] = 0
+                    analysis['price_change_24h'] = 0
+                
+                analysis['red_candles_6'] = 0  # Not applicable for momentum
+                
+                # Evidence summary
+                analysis['evidence'].append(f"🔥 Early Momentum: Score {total_score}/100 ({signals}/4 signals)")
+                
+                # Pump time estimate based on signal strength
+                if signals >= 3:
+                    analysis['pump_time'] = "Trong 1-4h tới"
+                else:
+                    analysis['pump_time'] = "Trong 4-12h tới"
+                analysis['evidence'].append(f"⏳ Dự Kiến Pump: {analysis['pump_time']}")
+                
+                # Calculate entry zone from recent 5m data
+                entry_low = float(klines_5m['low'].tail(12).min())
+                entry_high = current_price
+                analysis['entry_zone'] = (entry_low, entry_high)
+                
+                # Dynamic TP/SL for momentum trades (wider targets)
+                atr = self._calculate_atr(klines_5m, period=14)
+                tp_sl_info = self._calculate_dynamic_tp_sl(
+                    current_price, atr, total_score, vol_spike
+                )
+                analysis['tp_sl_info'] = tp_sl_info
+                
+        except Exception as e:
+            logger.error(f"Error in early momentum detection for {symbol}: {e}")
+        
         return analysis
 
     def _detect_institutional_activity(self, klines: pd.DataFrame, trades: List[Dict], market_data: Dict) -> Dict:
