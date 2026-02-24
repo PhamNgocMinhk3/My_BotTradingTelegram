@@ -112,27 +112,27 @@ Bot này là một hệ thống phân tích thị trường crypto **hoàn toàn
 ┌──────────────────────────────────────────────────────────────────┐
 │                     CORE ANALYSIS ENGINES                        │
 │                                                                  │
-│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
-│  │ indicators.py│  │bot_detector  │  │ advanced_pump_detector │ │
-│  │ RSI, MFI,    │  │ .py          │  │ .py                    │ │
-│  │ Stoch RSI,   │  │ 5 Bot Types  │  │ 15+ Indicators         │ │
-│  │ EMA, BB      │  │ Detection    │  │ Stealth Accumulation   │ │
-│  └──────────────┘  └──────────────┘  │ Early Momentum         │ │
-│                                      │ Supply Shock            │ │
-│  ┌──────────────┐  ┌──────────────┐  └────────────────────────┘ │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐  │
+│  │ indicators.py│  │bot_detector  │  │ advanced_pump_detector │  │
+│  │ RSI, MFI,    │  │ .py          │  │ .py                    │  │
+│  │ Stoch RSI,   │  │ 5 Bot Types  │  │ 15+ Indicators         │  │
+│  │ EMA, BB      │  │ Detection    │  │ Stealth Accumulation   │  │
+│  └──────────────┘  └──────────────┘  │ Early Momentum         │  │
+│                                      │ Supply Shock           │  │
+│  ┌──────────────┐  ┌──────────────┐  └────────────────────────┘  │
 │  │volume_       │  │ chart_       │                              │
-│  │detector.py   │  │ generator.py │  ┌────────────────────────┐ │
-│  │Volume Spikes │  │ Matplotlib   │  │ gemini_analyzer.py     │ │
-│  │Multi-TF      │  │ Charts       │  │ Google Gemini AI       │ │
-│  └──────────────┘  └──────────────┘  │ Full Analysis + Score  │ │
-│                                      └────────────────────────┘ │
+│  │detector.py   │  │ generator.py │  ┌────────────────────────┐  │
+│  │Volume Spikes │  │ Matplotlib   │  │ gemini_analyzer.py     │  │
+│  │Multi-TF      │  │ Charts       │  │ Google Gemini AI       │  │
+│  └──────────────┘  └──────────────┘  │ Full Analysis + Score  │  │
+│                                      └────────────────────────┘  │
 └──────────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                        BINANCE API                               │
 │  (binance_client.py)                                             │
-│  Klines • Order Book • Trades • Tickers • 24h Stats             │
+│  Klines • Order Book • Trades • Tickers • 24h Stats              │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
