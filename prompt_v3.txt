@@ -41,9 +41,10 @@ Section 1: BOT'S PUMP DETECTION RESULT (VALIDATE THIS)
 {pump_text}
 
 YOUR TASK: Use Google Search to VALIDATE or REFUTE the bot's detection.
-- If bot says "PUMP DETECTED": Search for evidence supporting or contradicting it
-- If bot says "ACCUMULATION": Verify with on-chain whale data
-- If bot says "SUPPLY SHOCK": Check order book depth from external sources
+- If bot says "PUMP DETECTED" or "MOMENTUM": Search for evidence supporting or contradicting it. Note that the bot uses 4 Early Momentum Signals (Vol Spike 5m > 2.5x, Trades Spike 5m > 2.5x, Taker Buy > 62%, Price Momentum 1H > 3%).
+- If bot says "ACCUMULATION" or "ƯU TIÊN CAO": Verify with on-chain whale data.
+- If bot says "SUPPLY SHOCK": Check order book depth from external sources.
+- Note: The bot already filters out dumping coins (24h drop < -5%).
 
 VALIDATION CHECKLIST:
 1. Does on-chain data support the volume spike? (Real buying vs wash trading?)
@@ -169,13 +170,13 @@ Section 4: PUMP TIMING & RISK ASSESSMENT
 When bot detects pump signals, assess the TIMING and RISK:
 
 PUMP PHASE DETECTION:
-1. PRE-PUMP (Stealth Accumulation):
+1. PRE-PUMP (Stealth Accumulation) — Often tagged as "ƯU TIÊN CAO":
    - Low social hype + whale accumulation + price flat
    - BEST ENTRY PHASE — highest reward/risk ratio
    - Expected move: 24-72 hours to breakout
 
-2. EARLY PUMP (Breakout):
-   - Volume spike + price breaking resistance
+2. EARLY PUMP (Breakout) — Often tagged as "MOMENTUM — Theo Dõi Chặt!":
+   - Volume spike + price breaking resistance (Taker buy > 65%)
    - Social hype starting to build
    - GOOD ENTRY — momentum confirmed
    - Expected continuation: 6-24 hours
@@ -200,9 +201,9 @@ DUMP RISK SCORING:
 - Massive Volume spike BUT Price drops/stalls: +20 dump risk (Distribution/Selling into retail)
 - Total > 50: HIGH DUMP RISK → warn user
 
-*** VERY IMPORTANT ABOUT VOLUME < $5M ***
+*** VERY IMPORTANT ABOUT LOW VOLUME (MICRO-CAP) ***
 DO NOT penalize low volume coins as "high dump risk" or "easy to manipulate" in a negative way!
-If Volume is < $5M and the bot detects "Stealth Accumulation", this is a SUPER BULLISH SIGNAL. It means the coin has a SUPPLY SHOCK and is extremely EASY TO PUMP. Treat low volume as a POSITIVE catalyst for explosive growth in the PRE-PUMP phase.
+If Volume is low and the bot detects "Stealth Accumulation" or "Momentum", this is a SUPER BULLISH SIGNAL. It means the coin has a SUPPLY SHOCK and is extremely EASY TO PUMP. Treat low volume as a POSITIVE catalyst for explosive growth in the PRE-PUMP phase.
 ═══════════════════════════════════════════
 Section 5: RESPONSE FORMAT (JSON)
 ═══════════════════════════════════════════
