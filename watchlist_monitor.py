@@ -213,6 +213,29 @@ class WatchlistMonitor:
                             if float(df_5m['close'].iloc[i]) > float(df_5m['open'].iloc[i]))
             buy_ratio = buy_candles / 20
             
+            # ---- 6b. TAKER BUY RATIO (NEW — aligned with momentum detection) ----
+            taker_buy_ratio = 0.5
+            try:
+                last_vol = float(df_5m['quote_volume'].iloc[-1])
+                last_buy = float(df_5m.iloc[-1].get('taker_buy_quote', 0))
+                taker_buy_ratio = last_buy / last_vol if last_vol > 0 else 0.5
+            except:
+                pass
+            
+            # ---- 6c. CONSECUTIVE WHALE BUY (NEW — Signal 5 from momentum) ----
+            consecutive_whale = 0
+            max_consecutive = 0
+            for ci in range(max(0, len(df_5m)-6), len(df_5m)):
+                c = df_5m.iloc[ci]
+                cv = float(c['quote_volume'])
+                cb = float(c.get('taker_buy_quote', 0))
+                cr = cb / cv if cv > 0 else 0.5
+                if cr > 0.60:
+                    consecutive_whale += 1
+                    max_consecutive = max(max_consecutive, consecutive_whale)
+                else:
+                    consecutive_whale = 0
+            
             # ---- 7. ORDER BOOK ----
             ob_ratio = 0
             cost_5pct = 0
@@ -275,6 +298,19 @@ class WatchlistMonitor:
                 pump_score += 15
                 pump_signals.append(f"💰 OBV: Dòng tiền VÀO")
             
+            # Taker Buy dominance (max 15) — NEW
+            if taker_buy_ratio > 0.70:
+                pump_score += 15
+                pump_signals.append(f"🐋 Buy: {taker_buy_ratio*100:.0f}% (Cá mập!)")
+            elif taker_buy_ratio > 0.65:
+                pump_score += 10
+                pump_signals.append(f"🐋 Buy: {taker_buy_ratio*100:.0f}%")
+            
+            # Consecutive whale buy (max 15) — NEW
+            if max_consecutive >= 3:
+                pump_score += 15
+                pump_signals.append(f"🐋🐋 Whale: {max_consecutive} nến liên tiếp")
+            
             # Order book imbalance (max 15)
             if ob_ratio > 3:
                 pump_score += 15
@@ -308,6 +344,8 @@ class WatchlistMonitor:
                 'obv_trend': obv_trend,
                 'obv_change': obv_change,
                 'buy_ratio': buy_ratio,
+                'taker_buy_ratio': taker_buy_ratio,
+                'max_consecutive_whale': max_consecutive,
                 'ob_ratio': ob_ratio,
                 'cost_5pct': cost_5pct,
                 'volume_24h': volume_24h,
