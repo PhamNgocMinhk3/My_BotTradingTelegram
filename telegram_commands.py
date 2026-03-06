@@ -2650,6 +2650,13 @@ class TelegramCommandHandler:
                         msg += "⚠️ <b>Dưới ngưỡng - Không khuyến nghị</b>\n"
                 
                 # Layer details
+                if 'advanced' in result and result['advanced']:
+                    adv = result['advanced']
+                    msg += f"\n<b>💎 Chân Sóng / Early Momentum:</b> {adv.get('confidence', 0):.0f}%\n"
+                    if 'evidence' in adv and adv['evidence']:
+                        for e in adv['evidence']:
+                            msg += f"   {e}\n"
+                            
                 if 'layer1' in result and result['layer1']:
                     layer1 = result['layer1']
                     msg += f"\n<b>⚡ Layer 1 (5m):</b> {layer1['pump_score']:.0f}%\n"
@@ -3859,6 +3866,22 @@ class TelegramCommandHandler:
         while retry_count < max_retries:
             try:
                 logger.info(f"Attempting to start polling (attempt {retry_count + 1}/{max_retries})...")
+                
+                # Start background threads if they haven't been started
+                try:
+                    if hasattr(self, 'pump_detector') and hasattr(self.pump_detector, 'start'):
+                        self.pump_detector.start()
+                        logger.info("✅ Background pump detector started (from polling)")
+                    
+                    # COMMENTED OUT: Only run Pump Watch by default to conserve API limits
+                    # if hasattr(self, 'market_scanner') and hasattr(self.market_scanner, 'start'):
+                    #     self.market_scanner.start()
+                    #     logger.info("✅ Background market scanner started (from polling)")
+                    # if hasattr(self, 'bot_monitor') and hasattr(self.bot_monitor, 'start'):
+                    #     self.bot_monitor.start()
+                    #     logger.info("✅ Background bot monitor started (from polling)")
+                except Exception as e:
+                    logger.error(f"Error starting background threads: {e}")
                 
                 # Use infinity_polling with better error handling
                 self.telegram_bot.infinity_polling(
