@@ -64,8 +64,8 @@ JSON Schema
       },
       "pump_type": {
         "type": "string",
-        "enum": ["STEALTH_ACCUMULATION", "WHALE_PUSH", "RETAIL_FOMO", "FAKE_PUMP", "ORGANIC_GROWTH", "NONE"],
-        "description": "Type of pump detected. STEALTH=hidden buying, WHALE_PUSH=big player, RETAIL_FOMO=hype-driven, FAKE_PUMP=wash/manipulation"
+        "enum": ["STEALTH_ACCUMULATION", "MOMENTUM_BREAKOUT", "WHALE_PUSH", "RETAIL_FOMO", "FAKE_PUMP", "ORGANIC_GROWTH", "NONE"],
+        "description": "Type of pump detected. STEALTH=hidden buying, MOMENTUM_BREAKOUT=early volume/price breakout, WHALE_PUSH=big player, RETAIL_FOMO=hype-driven, FAKE_PUMP=wash/manipulation"
       },
       "pump_phase": {
         "type": "string",
