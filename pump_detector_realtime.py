@@ -165,7 +165,7 @@ class RealtimePumpDetector:
                 self._scan_pre_pump()
             except Exception as e:
                 logger.error(f"Pre-Pump Scan Error: {e}")
-            time.sleep(self.layer3_interval)  # Using Layer 3 interval (5m) for pre-pump
+            time.sleep(self.layer1_interval)  # Run every 1m to catch early pumps quickly
     
     def start(self):
         """Start real-time pump monitoring"""
@@ -1051,6 +1051,9 @@ class RealtimePumpDetector:
         """
         SMART CLEANUP: Remove weak/stagnant coins from watchlist
         Run every 1 hour
+        
+        UPGRADED: Now re-scores with BOTH stealth AND momentum detection
+        to avoid wrongly evicting momentum-detected coins.
         """
         try:
             if not self.watchlist:
@@ -1066,11 +1069,23 @@ class RealtimePumpDetector:
             removed_count = 0
             
             for symbol in current_list:
-                # 1. Check Score (Re-analyze)
-                # We need to re-run detection to get current score
-                # This might be heavy if list is huge, but we cap list at 20-30 usually
                 try:
-                    # Get 1h klines for quick check
+                    # RULE 0: DUMP FILTER — Remove coins that are dumping hard
+                    try:
+                        ticker = self.binance.client.get_ticker(symbol=symbol)
+                        pct_24h = float(ticker.get('priceChangePercent', 0))
+                        if pct_24h < -15:  # Severe dump
+                            self.watchlist.remove(symbol)
+                            reason = f"📉 Dump nghiêm trọng ({pct_24h:+.0f}%)"
+                            self.bot.send_message(f"🗑️ <b>Đã xóa {symbol}</b> khỏi Watchlist\n{reason}")
+                            removed_count += 1
+                            logger.info(f"🗑️ Removed {symbol}: Dump {pct_24h:+.0f}%")
+                            continue
+                    except Exception:
+                        ticker = None
+                    
+                    # RULE 1: Score Drop (Invalid Signal)
+                    # Re-score with BOTH detection methods
                     klines = self.binance.get_klines(symbol, '1h', limit=50)
                     if klines is None or klines.empty:
                         continue
@@ -1079,13 +1094,28 @@ class RealtimePumpDetector:
                          from advanced_pump_detector import AdvancedPumpDumpDetector
                          self.advanced_detector = AdvancedPumpDumpDetector(self.binance)
                     
+                    # Method 1: Stealth Accumulation
                     result = self.advanced_detector._detect_stealth_accumulation(klines)
-                    current_score = result.get('confidence', 0) if result else 0
+                    stealth_score = result.get('confidence', 0) if result else 0
                     
-                    # RULE 1: Score Drop (Invalid Signal)
+                    # Method 2: Early Momentum (5m) — prevents wrongly evicting momentum coins
+                    momentum_score = 0
+                    try:
+                        klines_5m = self.binance.get_klines(symbol, '5m', limit=100)
+                        if klines_5m is not None and not klines_5m.empty and len(klines_5m) >= 24:
+                            mom_result = self.advanced_detector._detect_early_momentum(
+                                klines_5m, ticker_data=ticker, symbol=symbol)
+                            momentum_score = mom_result.get('confidence', 0) if mom_result else 0
+                    except Exception:
+                        pass
+                    
+                    # Use the BEST score from either detection method
+                    current_score = max(stealth_score, momentum_score)
+                    
                     if current_score < 50:
                         self.watchlist.remove(symbol)
-                        logger.info(f"🗑️ Removed {symbol}: Score dropped to {current_score} (< 50)")
+                        method = "Stealth" if stealth_score >= momentum_score else "Momentum"
+                        logger.info(f"🗑️ Removed {symbol}: Score dropped to {current_score} (S={stealth_score}, M={momentum_score})")
                         self.bot.send_message(f"🗑️ <b>Đã xóa {symbol}</b> khỏi Watchlist\n📉 Lý do: Tín hiệu yếu (Score {current_score})")
                         removed_count += 1
                         continue
@@ -1841,22 +1871,25 @@ class RealtimePumpDetector:
         try:
             logger.info(f"Manual scan for {symbol}...")
             
+            # --- Advanced Detection (Layer 0) ---
+            advanced = self._analyze_pre_pump(symbol)
+            
             # Layer 1
             layer1 = self._analyze_layer1(symbol)
             if not layer1 or layer1['pump_score'] < self.layer1_threshold:
-                return {'symbol': symbol, 'result': 'No pump signal (Layer 1)', 'layer1': layer1}
+                return {'symbol': symbol, 'result': 'No pump signal (Layer 1)', 'advanced': advanced, 'layer1': layer1}
             
             # Layer 2
             layer2 = self._analyze_layer2(symbol, layer1)
             if not layer2 or layer2['pump_score'] < self.layer2_threshold:
-                return {'symbol': symbol, 'result': 'Not confirmed (Layer 2)', 'layer1': layer1, 'layer2': layer2}
+                return {'symbol': symbol, 'result': 'Not confirmed (Layer 2)', 'advanced': advanced, 'layer1': layer1, 'layer2': layer2}
             
             # Layer 3
             detection_data = {'layer1': layer1, 'layer2': layer2}
             layer3 = self._analyze_layer3(symbol, detection_data)
             
             if not layer3:
-                return {'symbol': symbol, 'result': 'No Layer 3 data', 'layer1': layer1, 'layer2': layer2}
+                return {'symbol': symbol, 'result': 'No Layer 3 data', 'advanced': advanced, 'layer1': layer1, 'layer2': layer2}
             
             # Final score
             detection_data['layer3'] = layer3
@@ -1866,6 +1899,7 @@ class RealtimePumpDetector:
                 'symbol': symbol,
                 'result': 'PUMP DETECTED' if final_score >= self.final_threshold else 'Below threshold',
                 'final_score': final_score,
+                'advanced': advanced,
                 'layer1': layer1,
                 'layer2': layer2,
                 'layer3': layer3
