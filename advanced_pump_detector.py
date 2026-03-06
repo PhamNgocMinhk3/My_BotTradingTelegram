@@ -1210,16 +1210,16 @@ class AdvancedPumpDumpDetector:
             signals = 0
             signal_score = 0
             
-            # Signal 1: Volume Spike > 3x
-            vol_detected = vol_spike > 3 or vol_spike_cluster > 2.5
+            # Signal 1: Volume Spike > 2.0x
+            vol_detected = vol_spike > 2.0 or vol_spike_cluster > 1.8
             if vol_detected:
                 signals += 1
                 spike_val = max(vol_spike, vol_spike_cluster)
                 signal_score += min(25, int(spike_val * 5))
                 analysis['evidence'].append(f"⚡ Vol Spike: {spike_val:.1f}x (vs 6h avg)")
             
-            # Signal 2: Trades Spike > 3x
-            trades_detected = trades_spike > 3 or trades_spike_cluster > 2.5
+            # Signal 2: Trades Spike > 2.0x
+            trades_detected = trades_spike > 2.0 or trades_spike_cluster > 1.8
             if trades_detected:
                 signals += 1
                 trd_val = max(trades_spike, trades_spike_cluster)
@@ -1232,15 +1232,15 @@ class AdvancedPumpDumpDetector:
             last_3_total = float(klines_5m['quote_volume'].tail(3).sum())
             buy_ratio_smooth = last_3_buy / last_3_total if last_3_total > 0 else 0.5
             
-            whale_buying = buy_ratio > 0.65 or buy_ratio_smooth > 0.62
+            whale_buying = buy_ratio > 0.60 or buy_ratio_smooth > 0.58
             if whale_buying:
                 signals += 1
                 best_buy = max(buy_ratio, buy_ratio_smooth)
                 signal_score += min(20, int((best_buy - 0.5) * 100))
                 analysis['evidence'].append(f"🐋 Whale Buy: {best_buy:.0%} taker buy ratio")
             
-            # Signal 4: Price momentum > 3% in 1h
-            momentum_detected = price_1h_change > 3
+            # Signal 4: Price momentum > 1.5% in 1h
+            momentum_detected = price_1h_change > 1.5
             if momentum_detected:
                 signals += 1
                 signal_score += min(20, int(price_1h_change * 3))
@@ -1266,7 +1266,7 @@ class AdvancedPumpDumpDetector:
                 else:
                     consecutive_whale = 0
             
-            whale_accumulation = max_consecutive >= 3
+            whale_accumulation = max_consecutive >= 2
             if whale_accumulation:
                 signals += 1
                 signal_score += 20 + min(15, (max_consecutive - 3) * 5)  # +20 base, +5 per extra
